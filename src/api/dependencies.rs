@@ -19,7 +19,7 @@ pub struct DependencyReport {
 
 pub async fn check_dependencies() -> impl Responder {
     let mut deps = Vec::new();
-    
+
     // Detect GPU vendors to only show relevant GPU tool dependencies
     let mut has_nvidia_gpu = false;
     let mut has_amd_gpu = false;
@@ -30,7 +30,10 @@ pub async fn check_dependencies() -> impl Responder {
             let path = entry.path();
             if let Ok(class) = std::fs::read_to_string(path.join("class")) {
                 let class = class.trim();
-                if class.starts_with("0x0300") || class.starts_with("0x0302") || class.starts_with("0x0380") {
+                if class.starts_with("0x0300")
+                    || class.starts_with("0x0302")
+                    || class.starts_with("0x0380")
+                {
                     if let Ok(vendor_id) = std::fs::read_to_string(path.join("vendor")) {
                         match vendor_id.trim() {
                             "0x10de" => has_nvidia_gpu = true,
@@ -167,9 +170,14 @@ pub async fn check_dependencies() -> impl Responder {
             installed: has_nvidia,
             optional: true,
             install_hint: if !has_nvidia {
-                if pm_apt { Some("sudo apt install nvidia-utils-535".to_string()) }
-                else { Some("Install NVIDIA drivers/utils".to_string()) }
-            } else { None },
+                if pm_apt {
+                    Some("sudo apt install nvidia-utils-535".to_string())
+                } else {
+                    Some("Install NVIDIA drivers/utils".to_string())
+                }
+            } else {
+                None
+            },
         });
     }
 
@@ -182,9 +190,14 @@ pub async fn check_dependencies() -> impl Responder {
             installed: has_intel,
             optional: true,
             install_hint: if !has_intel {
-                if pm_apt { Some("sudo apt install intel-gpu-tools".to_string()) }
-                else { Some("Install intel-gpu-tools".to_string()) }
-            } else { None },
+                if pm_apt {
+                    Some("sudo apt install intel-gpu-tools".to_string())
+                } else {
+                    Some("Install intel-gpu-tools".to_string())
+                }
+            } else {
+                None
+            },
         });
     }
 
@@ -198,7 +211,9 @@ pub async fn check_dependencies() -> impl Responder {
             optional: true,
             install_hint: if !has_amd {
                 Some("Install rocm-smi or use open-source amdgpu drivers".to_string())
-            } else { None },
+            } else {
+                None
+            },
         });
     }
 
@@ -234,7 +249,6 @@ pub async fn install_dependency(body: web::Json<InstallReq>) -> impl Responder {
         "Docker" => ("docker.io", "docker"),
         "Intel GPU Tools" => ("intel-gpu-tools", "intel_gpu_top"),
         _ => return HttpResponse::BadRequest().json("Invalid dependency name"),
-
     };
 
     if check_command(cmd_check) {
@@ -255,7 +269,11 @@ pub async fn install_dependency(body: web::Json<InstallReq>) -> impl Responder {
     // Execute
     // Note: This requires the user running WADM to have sudo NOPASSWD or be root.
     // If not root, we try sudo.
-    let output = Command::new("sudo").arg("-n").arg(pm).args(&install_cmd).output();
+    let output = Command::new("sudo")
+        .arg("-n")
+        .arg(pm)
+        .args(&install_cmd)
+        .output();
 
     match output {
         Ok(o) => {

@@ -11,16 +11,15 @@ pub struct FirewallStatus {
 
 #[derive(Deserialize)]
 pub struct FirewallAction {
-    pub action: String, 
+    pub action: String,
 }
 
 #[derive(Deserialize)]
 pub struct FirewallRuleData {
-    pub rule: String, 
+    pub rule: String,
 }
 
 pub async fn get_status() -> impl Responder {
-    
     let check = Command::new("which").arg("ufw").output();
     let installed = match check {
         Ok(o) => o.status.success(),
@@ -46,7 +45,7 @@ pub async fn get_status() -> impl Responder {
 
             let rules: Vec<String> = stdout
                 .lines()
-                .filter(|line| line.contains("[")) 
+                .filter(|line| line.contains("["))
                 .map(|line| line.to_string())
                 .collect();
 
@@ -97,14 +96,15 @@ pub async fn set_status(body: web::Json<FirewallAction>) -> impl Responder {
         "disable"
     };
 
-    
     let status = if arg == "enable" {
         Command::new("sh")
             .arg("-c")
             .arg("yes | sudo -n ufw enable")
             .status()
     } else {
-        Command::new("sudo").args(&["-n", "ufw", "disable"]).status()
+        Command::new("sudo")
+            .args(&["-n", "ufw", "disable"])
+            .status()
     };
 
     match status {
@@ -120,18 +120,17 @@ pub async fn set_status(body: web::Json<FirewallAction>) -> impl Responder {
 }
 
 pub async fn add_rule(body: web::Json<FirewallRuleData>) -> impl Responder {
-    
-    
-    
-
-    
     let args: Vec<&str> = body.rule.split_whitespace().collect();
 
     if args.is_empty() {
         return HttpResponse::BadRequest().json("Rule cannot be empty");
     }
 
-    let status = Command::new("sudo").arg("-n").arg("ufw").args(args).status();
+    let status = Command::new("sudo")
+        .arg("-n")
+        .arg("ufw")
+        .args(args)
+        .status();
 
     match status {
         Ok(s) => {
@@ -146,18 +145,11 @@ pub async fn add_rule(body: web::Json<FirewallRuleData>) -> impl Responder {
 }
 
 pub async fn delete_rule(body: web::Json<FirewallRuleData>) -> impl Responder {
-    
-    
-    
-
     let args: Vec<&str> = body.rule.split_whitespace().collect();
     if args.is_empty() {
         return HttpResponse::BadRequest().json("Rule cannot be empty");
     }
 
-
-    
-    
     let status = Command::new("sh")
         .arg("-c")
         .arg(format!("yes | sudo -n ufw delete {}", body.rule))

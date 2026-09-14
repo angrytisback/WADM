@@ -46,10 +46,8 @@ where
     }
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
-        
         let path = req.path();
 
-        
         if path == "/api/auth/status"
             || path == "/api/auth/login"
             || path == "/api/auth/setup/init"
@@ -64,7 +62,6 @@ where
             });
         }
 
-        
         let auth_header = req.headers().get("Authorization");
         let token = match auth_header {
             Some(value) => {
@@ -85,8 +82,6 @@ where
             });
         }
 
-        
-        
         let secret = crate::api::auth::JWT_SECRET.as_slice();
 
         match decode::<Claims>(
@@ -95,8 +90,6 @@ where
             &Validation::new(Algorithm::HS256),
         ) {
             Ok(_token_data) => {
-                
-                
                 let fut = self.service.call(req);
                 return Box::pin(async move {
                     let res = fut.await?;

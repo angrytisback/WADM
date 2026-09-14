@@ -1,18 +1,18 @@
-use actix_web::{web, HttpResponse, Responder, Error};
 use actix_multipart::Multipart;
-use futures_util::TryStreamExt;
-use serde::{Deserialize, Serialize};
-use std::process::Command;
-use std::fs;
-use std::path::Path;
-use std::io::Write;
+use actix_web::{web, Error, HttpResponse, Responder};
 use chrono::Local;
+use futures_util::TryStreamExt;
 use log::info;
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::io::Write;
+use std::path::Path;
+use std::process::Command;
 
 #[derive(Serialize)]
 pub struct Database {
     pub name: String,
-    pub engine: String, 
+    pub engine: String,
     pub size: String,
     pub container_id: Option<String>,
 }
@@ -41,7 +41,11 @@ pub struct BackupInfo {
 }
 
 fn is_valid_db_identifier(name: &str) -> bool {
-    !name.is_empty() && !name.starts_with('-') && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    !name.is_empty()
+        && !name.starts_with('-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 pub async fn list_dbs() -> impl Responder {
@@ -59,7 +63,7 @@ pub async fn list_dbs() -> impl Responder {
                     dbs.push(Database {
                         name: line.trim().to_string(),
                         engine: "mysql".to_string(),
-                        size: "-".to_string(), 
+                        size: "-".to_string(),
                         container_id: None,
                     });
                 }
@@ -97,14 +101,18 @@ pub async fn list_dbs() -> impl Responder {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
                 let parts: Vec<&str> = line.split('|').collect();
-                if parts.len() < 3 { continue; }
-                
+                if parts.len() < 3 {
+                    continue;
+                }
+
                 let id = parts[0];
                 let image = parts[1].to_lowercase();
 
                 if image.contains("postgres") {
                     if let Ok(db_out) = Command::new("docker")
-                        .args(&["exec", id, "psql", "-U", "postgres", "-l", "-t", "-A", "-F", "|"])
+                        .args(&[
+                            "exec", id, "psql", "-U", "postgres", "-l", "-t", "-A", "-F", "|",
+                        ])
                         .output()
                     {
                         if db_out.status.success() {
@@ -155,8 +163,11 @@ pub async fn list_tables(
 ) -> impl Responder {
     let (engine, db_name) = path.into_inner();
     let container_id = query.get("container_id");
-    
-    if !is_valid_db_identifier(&engine) || !is_valid_db_identifier(&db_name) || container_id.map_or(false, |c| !is_valid_db_identifier(c)) {
+
+    if !is_valid_db_identifier(&engine)
+        || !is_valid_db_identifier(&db_name)
+        || container_id.map_or(false, |c| !is_valid_db_identifier(c))
+    {
         return HttpResponse::BadRequest().json("Invalid identifier");
     }
 
@@ -165,7 +176,17 @@ pub async fn list_tables(
     if engine == "mysql" {
         let mut cmd = if let Some(cid) = container_id {
             let mut c = Command::new("docker");
-            c.args(&["exec", cid, "mysql", "-uroot", "-D", &db_name, "-e", "SHOW TABLES", "-N"]);
+            c.args(&[
+                "exec",
+                cid,
+                "mysql",
+                "-uroot",
+                "-D",
+                &db_name,
+                "-e",
+                "SHOW TABLES",
+                "-N",
+            ]);
             c
         } else {
             let mut c = Command::new("mysql");
@@ -177,18 +198,24 @@ pub async fn list_tables(
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 for line in stdout.lines() {
-                    tables.push(TableInfo { name: line.trim().to_string() });
+                    tables.push(TableInfo {
+                        name: line.trim().to_string(),
+                    });
                 }
             }
         }
     } else if engine == "postgres" {
         let mut cmd = if let Some(cid) = container_id {
             let mut c = Command::new("docker");
-            c.args(&["exec", cid, "psql", "-U", "postgres", "-d", &db_name, "-t", "-A", "-c", "\\dt"]);
+            c.args(&[
+                "exec", cid, "psql", "-U", "postgres", "-d", &db_name, "-t", "-A", "-c", "\\dt",
+            ]);
             c
         } else {
             let mut c = Command::new("sudo");
-            c.args(&["-n", "-u", "postgres", "psql", "-d", &db_name, "-t", "-A", "-c", "\\dt"]);
+            c.args(&[
+                "-n", "-u", "postgres", "psql", "-d", &db_name, "-t", "-A", "-c", "\\dt",
+            ]);
             c
         };
 
@@ -198,7 +225,9 @@ pub async fn list_tables(
                 for line in stdout.lines() {
                     let parts: Vec<&str> = line.split('|').collect();
                     if parts.len() >= 2 {
-                        tables.push(TableInfo { name: parts[1].to_string() });
+                        tables.push(TableInfo {
+                            name: parts[1].to_string(),
+                        });
                     }
                 }
             }
@@ -214,8 +243,12 @@ pub async fn get_table_data(
 ) -> impl Responder {
     let (engine, db_name, table_name) = path.into_inner();
     let container_id = query.get("container_id");
-    
-    if !is_valid_db_identifier(&engine) || !is_valid_db_identifier(&db_name) || !is_valid_db_identifier(&table_name) || container_id.map_or(false, |c| !is_valid_db_identifier(c)) {
+
+    if !is_valid_db_identifier(&engine)
+        || !is_valid_db_identifier(&db_name)
+        || !is_valid_db_identifier(&table_name)
+        || container_id.map_or(false, |c| !is_valid_db_identifier(c))
+    {
         return HttpResponse::BadRequest().json("Invalid identifier");
     }
 
@@ -230,23 +263,35 @@ pub async fn execute_query(
 ) -> impl Responder {
     let (engine, db_name) = path.into_inner();
     let container_id = query_params.get("container_id");
-    
-    if !is_valid_db_identifier(&engine) || !is_valid_db_identifier(&db_name) || container_id.map_or(false, |c| !is_valid_db_identifier(c)) {
+
+    if !is_valid_db_identifier(&engine)
+        || !is_valid_db_identifier(&db_name)
+        || container_id.map_or(false, |c| !is_valid_db_identifier(c))
+    {
         return HttpResponse::BadRequest().json("Invalid identifier");
     }
-    
-    let is_mutation = body.query.to_uppercase().contains("UPDATE") || 
-                      body.query.to_uppercase().contains("DELETE") || 
-                      body.query.to_uppercase().contains("INSERT") || 
-                      body.query.to_uppercase().contains("DROP") || 
-                      body.query.to_uppercase().contains("ALTER");
+
+    let is_mutation = body.query.to_uppercase().contains("UPDATE")
+        || body.query.to_uppercase().contains("DELETE")
+        || body.query.to_uppercase().contains("INSERT")
+        || body.query.to_uppercase().contains("DROP")
+        || body.query.to_uppercase().contains("ALTER");
 
     if is_mutation {
-        info!("Executing database change on {} ({}): {}", db_name, engine, body.query);
+        info!(
+            "Executing database change on {} ({}): {}",
+            db_name, engine, body.query
+        );
     }
 
-    let result = execute_sql_internal(&engine, &db_name, &body.query, container_id.map(|s| s.as_str())).await;
-    
+    let result = execute_sql_internal(
+        &engine,
+        &db_name,
+        &body.query,
+        container_id.map(|s| s.as_str()),
+    )
+    .await;
+
     if is_mutation && result.status().is_success() {
         info!("Successfully completed database change on {}.", db_name);
     } else if is_mutation {
@@ -256,7 +301,12 @@ pub async fn execute_query(
     result
 }
 
-async fn execute_sql_internal(engine: &str, db: &str, query: &str, container_id: Option<&str>) -> HttpResponse {
+async fn execute_sql_internal(
+    engine: &str,
+    db: &str,
+    query: &str,
+    container_id: Option<&str>,
+) -> HttpResponse {
     let mut columns = Vec::new();
     let mut rows = Vec::new();
 
@@ -289,11 +339,15 @@ async fn execute_sql_internal(engine: &str, db: &str, query: &str, container_id:
     } else if engine == "postgres" {
         let mut cmd = if let Some(cid) = container_id {
             let mut c = Command::new("docker");
-            c.args(&["exec", cid, "psql", "-U", "postgres", "-d", db, "-A", "-F", "\t", "-c", query]);
+            c.args(&[
+                "exec", cid, "psql", "-U", "postgres", "-d", db, "-A", "-F", "\t", "-c", query,
+            ]);
             c
         } else {
             let mut c = Command::new("sudo");
-            c.args(&["-n", "-u", "postgres", "psql", "-d", db, "-A", "-F", "\t", "-c", query]);
+            c.args(&[
+                "-n", "-u", "postgres", "psql", "-d", db, "-A", "-F", "\t", "-c", query,
+            ]);
             c
         };
 
@@ -304,7 +358,9 @@ async fn execute_sql_internal(engine: &str, db: &str, query: &str, container_id:
                 if let Some(header) = lines.next() {
                     columns = header.split('\t').map(|s| s.to_string()).collect();
                     for line in lines {
-                        if line.contains('(') && line.contains("row") { break; }
+                        if line.contains('(') && line.contains("row") {
+                            break;
+                        }
                         rows.push(line.split('\t').map(|s| s.to_string()).collect());
                     }
                 }
@@ -326,7 +382,7 @@ fn get_backup_dir(engine: &str, db: &str) -> String {
 
 pub async fn list_backups(path: web::Path<(String, String)>) -> impl Responder {
     let (engine, db) = path.into_inner();
-    
+
     if !is_valid_db_identifier(&engine) || !is_valid_db_identifier(&db) {
         return HttpResponse::BadRequest().json("Invalid identifier");
     }
@@ -341,15 +397,20 @@ pub async fn list_backups(path: web::Path<(String, String)>) -> impl Responder {
                     backups.push(BackupInfo {
                         filename: entry.file_name().to_string_lossy().to_string(),
                         size: metadata.len(),
-                        created_at: metadata.created()
-                            .map(|t| chrono::DateTime::<Local>::from(t).format("%Y-%m-%d %H:%M:%S").to_string())
+                        created_at: metadata
+                            .created()
+                            .map(|t| {
+                                chrono::DateTime::<Local>::from(t)
+                                    .format("%Y-%m-%d %H:%M:%S")
+                                    .to_string()
+                            })
                             .unwrap_or_else(|_| "Unknown".to_string()),
                     });
                 }
             }
         }
     }
-    
+
     backups.sort_by(|a, b| b.filename.cmp(&a.filename)); // Newest first (by name timestamp)
     HttpResponse::Ok().json(backups)
 }
@@ -360,8 +421,11 @@ pub async fn create_backup(
 ) -> impl Responder {
     let (engine, db) = path.into_inner();
     let container_id = query.get("container_id");
-    
-    if !is_valid_db_identifier(&engine) || !is_valid_db_identifier(&db) || container_id.map_or(false, |c| !is_valid_db_identifier(c)) {
+
+    if !is_valid_db_identifier(&engine)
+        || !is_valid_db_identifier(&db)
+        || container_id.map_or(false, |c| !is_valid_db_identifier(c))
+    {
         return HttpResponse::BadRequest().json("Invalid identifier");
     }
 
@@ -377,7 +441,10 @@ pub async fn create_backup(
     let success = if engine == "mysql" {
         if let Some(cid) = container_id {
             let output = Command::new("sh")
-                .args(&["-c", &format!("docker exec {} mysqldump -uroot {} > {}", cid, db, filepath)])
+                .args(&[
+                    "-c",
+                    &format!("docker exec {} mysqldump -uroot {} > {}", cid, db, filepath),
+                ])
                 .output();
             output.map(|o| o.status.success()).unwrap_or(false)
         } else {
@@ -389,12 +456,21 @@ pub async fn create_backup(
     } else if engine == "postgres" {
         if let Some(cid) = container_id {
             let output = Command::new("sh")
-                .args(&["-c", &format!("docker exec {} pg_dump -U postgres {} > {}", cid, db, filepath)])
+                .args(&[
+                    "-c",
+                    &format!(
+                        "docker exec {} pg_dump -U postgres {} > {}",
+                        cid, db, filepath
+                    ),
+                ])
                 .output();
             output.map(|o| o.status.success()).unwrap_or(false)
         } else {
             let output = Command::new("sh")
-                .args(&["-c", &format!("sudo -n -u postgres pg_dump {} > {}", db, filepath)])
+                .args(&[
+                    "-c",
+                    &format!("sudo -n -u postgres pg_dump {} > {}", db, filepath),
+                ])
                 .output();
             output.map(|o| o.status.success()).unwrap_or(false)
         }
@@ -417,8 +493,11 @@ pub async fn restore_backup(
 ) -> impl Responder {
     let (engine, db, filename) = path.into_inner();
     let container_id = query.get("container_id");
-    
-    if !is_valid_db_identifier(&engine) || !is_valid_db_identifier(&db) || container_id.map_or(false, |c| !is_valid_db_identifier(c)) {
+
+    if !is_valid_db_identifier(&engine)
+        || !is_valid_db_identifier(&db)
+        || container_id.map_or(false, |c| !is_valid_db_identifier(c))
+    {
         return HttpResponse::BadRequest().json("Invalid identifier");
     }
 
@@ -428,12 +507,18 @@ pub async fn restore_backup(
         return HttpResponse::NotFound().json("Backup file not found");
     }
 
-    info!("Initiating database restoration for {} from {}...", db, filename);
+    info!(
+        "Initiating database restoration for {} from {}...",
+        db, filename
+    );
 
     let success = if engine == "mysql" {
         if let Some(cid) = container_id {
             let output = Command::new("sh")
-                .args(&["-c", &format!("docker exec -i {} mysql -uroot {} < {}", cid, db, filepath)])
+                .args(&[
+                    "-c",
+                    &format!("docker exec -i {} mysql -uroot {} < {}", cid, db, filepath),
+                ])
                 .output();
             output.map(|o| o.status.success()).unwrap_or(false)
         } else {
@@ -445,12 +530,21 @@ pub async fn restore_backup(
     } else if engine == "postgres" {
         if let Some(cid) = container_id {
             let output = Command::new("sh")
-                .args(&["-c", &format!("docker exec -i {} psql -U postgres -d {} < {}", cid, db, filepath)])
+                .args(&[
+                    "-c",
+                    &format!(
+                        "docker exec -i {} psql -U postgres -d {} < {}",
+                        cid, db, filepath
+                    ),
+                ])
                 .output();
             output.map(|o| o.status.success()).unwrap_or(false)
         } else {
             let output = Command::new("sh")
-                .args(&["-c", &format!("sudo -n -u postgres psql -d {} < {}", db, filepath)])
+                .args(&[
+                    "-c",
+                    &format!("sudo -n -u postgres psql -d {} < {}", db, filepath),
+                ])
                 .output();
             output.map(|o| o.status.success()).unwrap_or(false)
         }
@@ -467,13 +561,18 @@ pub async fn restore_backup(
     }
 }
 
-pub async fn download_backup(path: web::Path<(String, String, String)>) -> Result<actix_files::NamedFile, Error> {
+pub async fn download_backup(
+    path: web::Path<(String, String, String)>,
+) -> Result<actix_files::NamedFile, Error> {
     let (engine, db, filename) = path.into_inner();
-    if !is_valid_db_identifier(&engine) || !is_valid_db_identifier(&db) || !is_valid_db_identifier(&filename.replace(".sql", "").replace(".zip", "")) {
+    if !is_valid_db_identifier(&engine)
+        || !is_valid_db_identifier(&db)
+        || !is_valid_db_identifier(&filename.replace(".sql", "").replace(".zip", ""))
+    {
         return Err(actix_web::error::ErrorBadRequest("Invalid identifier"));
     }
     let filepath = format!("{}/{}", get_backup_dir(&engine, &db), filename);
-    
+
     info!("Exporting database backup: {}", filename);
     actix_files::NamedFile::open(filepath).map_err(|e| e.into())
 }
@@ -483,7 +582,7 @@ pub async fn upload_backup(
     mut payload: Multipart,
 ) -> Result<HttpResponse, Error> {
     let (engine, db) = path.into_inner();
-    
+
     if !is_valid_db_identifier(&engine) || !is_valid_db_identifier(&db) {
         return Ok(HttpResponse::BadRequest().json("Invalid identifier"));
     }
@@ -499,7 +598,7 @@ pub async fn upload_backup(
             .get_filename()
             .map(|f| f.to_string())
             .unwrap_or_else(|| format!("upload_{}.sql", Local::now().format("%Y%m%d_%H%M%S")));
-        
+
         let filepath = format!("{}/{}", dir, filename);
         let mut f = fs::File::create(filepath)?;
 
@@ -514,13 +613,16 @@ pub async fn upload_backup(
 
 pub async fn delete_backup(path: web::Path<(String, String, String)>) -> impl Responder {
     let (engine, db, filename) = path.into_inner();
-    
-    if !is_valid_db_identifier(&engine) || !is_valid_db_identifier(&db) || !is_valid_db_identifier(&filename.replace(".sql", "").replace(".zip", "")) {
+
+    if !is_valid_db_identifier(&engine)
+        || !is_valid_db_identifier(&db)
+        || !is_valid_db_identifier(&filename.replace(".sql", "").replace(".zip", ""))
+    {
         return HttpResponse::BadRequest().json("Invalid identifier");
     }
 
     let filepath = format!("{}/{}", get_backup_dir(&engine, &db), filename);
-    
+
     if fs::remove_file(filepath).is_ok() {
         info!("Deleted backup file: {}", filename);
         HttpResponse::Ok().json("Backup deleted")

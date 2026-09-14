@@ -14,7 +14,9 @@ const AUTH_FILE: &str = "wadm-auth.json";
 use once_cell::sync::Lazy;
 
 pub static JWT_SECRET: Lazy<Vec<u8>> = Lazy::new(|| {
-    let path = std::env::current_dir().unwrap_or_default().join(".wadm_jwt_secret");
+    let path = std::env::current_dir()
+        .unwrap_or_default()
+        .join(".wadm_jwt_secret");
     if path.exists() {
         if let Ok(content) = fs::read(&path) {
             return content;

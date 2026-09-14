@@ -21,7 +21,6 @@ async fn main() -> std::io::Result<()> {
     let port = 8168;
     log::info!("Starting WADM server on port {}", port);
 
-    
     if let Ok(cwd) = std::env::current_dir() {
         log::info!("Current Working Directory: {:?}", cwd);
         let dist_path = cwd.join("web/dist");
@@ -32,7 +31,6 @@ async fn main() -> std::io::Result<()> {
         }
     }
 
-    
     let sys = System::new_all();
     let networks = Networks::new_with_refreshed_list();
     let app_state = web::Data::new(AppState {
@@ -40,10 +38,8 @@ async fn main() -> std::io::Result<()> {
         networks: Mutex::new(networks),
     });
 
-    
     let auth_store = web::Data::new(Mutex::new(load_auth_store()));
 
-    
     let app_config = web::Data::new(Mutex::new(api::config::load_config()));
 
     HttpServer::new(move || {
@@ -59,12 +55,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(cors)
             .wrap(actix_web::middleware::Logger::new("REQ|%m|%U|%s"))
             .route("/api/health", web::get().to(health_check))
-
-            .service(
-                web::scope("/api")
-                    .wrap(Auth) 
-                    .configure(api::config),
-            )
+            .service(web::scope("/api").wrap(Auth).configure(api::config))
             .service(actix_files::Files::new("/", "./web/dist").index_file("index.html"))
     })
     .bind(("0.0.0.0", port))?

@@ -5,13 +5,13 @@ use std::process::Command;
 #[derive(Serialize)]
 struct Service {
     name: String,
-    status: String, 
+    status: String,
     description: String,
 }
 
 #[derive(Deserialize)]
 pub struct ServiceControl {
-    action: String, 
+    action: String,
 }
 
 pub async fn list_services() -> impl Responder {
@@ -20,8 +20,6 @@ pub async fn list_services() -> impl Responder {
     let mut services = Vec::new();
     let mut seen_names = HashSet::new();
 
-    
-    
     if let Ok(output) = Command::new("sudo")
         .args(&[
             "-n",
@@ -65,8 +63,6 @@ pub async fn list_services() -> impl Responder {
         }
     }
 
-    
-    
     if let Ok(output) = Command::new("sudo")
         .args(&[
             "-n",
@@ -85,7 +81,6 @@ pub async fn list_services() -> impl Responder {
             if parts.len() >= 2 {
                 let name = parts[0].to_string();
 
-                
                 if seen_names.contains(&name)
                     || name.starts_with("dbus-")
                     || name.starts_with("user@")
@@ -93,8 +88,6 @@ pub async fn list_services() -> impl Responder {
                     continue;
                 }
 
-                
-                
                 services.push(Service {
                     name,
                     status: "Stopped".to_string(),
@@ -104,14 +97,17 @@ pub async fn list_services() -> impl Responder {
         }
     }
 
-    
     services.sort_by(|a, b| a.name.cmp(&b.name));
 
     HttpResponse::Ok().json(services)
 }
 
 fn is_valid_service_name(name: &str) -> bool {
-    !name.is_empty() && !name.starts_with('-') && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '@')
+    !name.is_empty()
+        && !name.starts_with('-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '@')
 }
 
 pub async fn control_service(
@@ -129,8 +125,6 @@ pub async fn control_service(
         return HttpResponse::BadRequest().json("Invalid action");
     }
 
-    
-    
     let output = Command::new("sudo")
         .args(&["-n", "systemctl", action, &service_name])
         .output();
@@ -152,9 +146,16 @@ pub async fn get_service_logs(path: web::Path<String>) -> impl Responder {
         return HttpResponse::BadRequest().json("Invalid service name");
     }
 
-    
     let output = Command::new("sudo")
-        .args(&["-n", "journalctl", "-u", &service_name, "-n", "100", "--no-pager"])
+        .args(&[
+            "-n",
+            "journalctl",
+            "-u",
+            &service_name,
+            "-n",
+            "100",
+            "--no-pager",
+        ])
         .output();
 
     match output {

@@ -1,8 +1,8 @@
 use actix_web::{web, HttpResponse, Responder};
 use bollard::Docker;
 use futures_util::stream::TryStreamExt;
-use serde::{Deserialize, Serialize};
 use log::info;
+use serde::{Deserialize, Serialize};
 
 use std::process::Command;
 
@@ -13,14 +13,13 @@ struct ContainerInfo {
     image: String,
     status: String,
     state: String,
-    
 }
 
 #[derive(Serialize)]
 pub struct ContainerStats {
     pub id: String,
-    pub cpu_usage: f64,    
-    pub memory_usage: u64, 
+    pub cpu_usage: f64,
+    pub memory_usage: u64,
 }
 
 #[derive(Serialize)]
@@ -32,7 +31,7 @@ pub struct DockerStatus {
 
 #[derive(Deserialize)]
 pub struct ContainerAction {
-    pub action: String, 
+    pub action: String,
 }
 
 pub async fn list_containers() -> impl Responder {
@@ -76,8 +75,6 @@ pub async fn list_containers() -> impl Responder {
     }
 }
 
-
-
 pub async fn get_container_stats(id: web::Path<String>) -> impl Responder {
     let docker = match Docker::connect_with_local_defaults() {
         Ok(d) => d,
@@ -93,11 +90,6 @@ pub async fn get_container_stats(id: web::Path<String>) -> impl Responder {
 
     match docker.stats(&id.into_inner(), options).try_next().await {
         Ok(Some(stats)) => {
-            
-            
-            
-            
-
             let cpu_stats = stats.cpu_stats;
             let precpu_stats = stats.precpu_stats;
 
@@ -133,7 +125,6 @@ pub async fn get_container_stats(id: web::Path<String>) -> impl Responder {
                 cpu_percent = (cpu_delta / system_delta) * (online_cpus as f64) * 100.0;
             }
 
-            
             let memory_usage = stats
                 .memory_stats
                 .as_ref()
@@ -165,7 +156,10 @@ pub async fn control_container(
         }
     };
 
-    info!("Initiating Docker action: {} on container {}", action, container_id);
+    info!(
+        "Initiating Docker action: {} on container {}",
+        action, container_id
+    );
     let result = match action.as_str() {
         "start" => {
             docker
@@ -206,11 +200,14 @@ pub async fn control_container(
         Ok(_) => {
             info!("Successfully {}ed container {}", action, container_id);
             HttpResponse::Ok().json(format!("Container {} {}ed", container_id, action))
-        },
+        }
         Err(e) => {
-            info!("Docker action {} failed for {}: {}", action, container_id, e);
+            info!(
+                "Docker action {} failed for {}: {}",
+                action, container_id, e
+            );
             HttpResponse::InternalServerError().json(format!("Docker action failed: {}", e))
-        },
+        }
     }
 }
 
@@ -223,7 +220,6 @@ pub async fn get_status() -> impl Responder {
 
     let mut running = false;
     if installed {
-        
         if let Ok(output) = Command::new("sudo")
             .args(&["-n", "systemctl", "is-active", "docker"])
             .output()
@@ -250,7 +246,7 @@ pub async fn get_status() -> impl Responder {
 }
 
 pub async fn start_service() -> impl Responder {
-    let status = Command::new("sudo") 
+    let status = Command::new("sudo")
         .args(&["-n", "systemctl", "start", "docker"])
         .status();
 

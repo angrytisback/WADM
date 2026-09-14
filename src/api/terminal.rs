@@ -22,20 +22,21 @@ pub async fn ws_terminal(
     config_data: web::Data<Mutex<AppConfig>>,
     query: web::Query<WsQuery>,
 ) -> Result<HttpResponse, Error> {
-    
     let token = &query.token;
     if token.is_empty() {
         return Ok(HttpResponse::Unauthorized().body("Missing token"));
     }
 
     let validation = Validation::new(Algorithm::HS256);
-    let _claims = match decode::<Claims>(token, &DecodingKey::from_secret(JWT_SECRET.as_slice()), &validation)
-    {
+    let _claims = match decode::<Claims>(
+        token,
+        &DecodingKey::from_secret(JWT_SECRET.as_slice()),
+        &validation,
+    ) {
         Ok(c) => c,
         Err(_) => return Ok(HttpResponse::Unauthorized().body("Invalid token")),
     };
 
-    
     {
         let config = config_data.lock().unwrap();
         if !config.developer_mode {
@@ -68,7 +69,6 @@ pub async fn ws_terminal(
             .spawn_command(cmd)
             .expect("Failed to spawn shell");
 
-        
         let mut reader = pair
             .master
             .try_clone_reader()
@@ -89,14 +89,12 @@ pub async fn ws_terminal(
             }
         });
 
-        
         let mut writer = pair.master.take_writer().expect("Failed to take writer");
 
-        
         loop {
             tokio::select! {
                 Some(chunk) = rx.recv() => {
-                    
+
                     if session.binary(chunk).await.is_err() {
                         break;
                     }

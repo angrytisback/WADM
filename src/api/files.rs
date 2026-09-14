@@ -1,14 +1,14 @@
 use actix_files::NamedFile;
 use actix_multipart::Multipart;
-use actix_web::{web, HttpResponse, Responder, Error};
+use actix_web::{web, Error, HttpResponse, Responder};
+use chrono::{DateTime, Local};
 use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::io::Write;
-use chrono::{DateTime, Local};
 
 #[derive(Serialize)]
 pub struct FileInfo {
@@ -61,7 +61,7 @@ fn get_permissions_string(mode: u32) -> String {
 
 pub async fn list_files(query: web::Query<FileRequest>) -> impl Responder {
     let req_path = Path::new(&query.path);
-    
+
     if !req_path.exists() || !req_path.is_dir() {
         return HttpResponse::BadRequest().json("Path does not exist or is not a directory");
     }
@@ -75,7 +75,11 @@ pub async fn list_files(query: web::Query<FileRequest>) -> impl Responder {
                 #[cfg(unix)]
                 let mode = metadata.permissions().mode();
                 #[cfg(not(unix))]
-                let mode = if metadata.permissions().readonly() { 0o444 } else { 0o644 };
+                let mode = if metadata.permissions().readonly() {
+                    0o444
+                } else {
+                    0o644
+                };
                 let modified = metadata
                     .modified()
                     .map(|sys_time| {
@@ -96,7 +100,6 @@ pub async fn list_files(query: web::Query<FileRequest>) -> impl Responder {
         }
     }
 
-    
     files.sort_by(|a, b| {
         if a.is_dir && !b.is_dir {
             std::cmp::Ordering::Less
@@ -115,18 +118,18 @@ pub async fn read_file(query: web::Query<FileRequest>) -> impl Responder {
     if !path.exists() || path.is_dir() {
         return HttpResponse::BadRequest().json("File does not exist or is a directory");
     }
-    
+
     let metadata = fs::metadata(path).unwrap_or_else(|_| fs::metadata("/dev/null").unwrap());
-    if metadata.len() > 10 * 1024 * 1024 { 
+    if metadata.len() > 10 * 1024 * 1024 {
         return HttpResponse::BadRequest().json("File is too large to read into memory (max 10MB)");
     }
 
     match fs::read_to_string(path) {
         Ok(content) => HttpResponse::Ok().json(content),
         Err(e) => {
-            
             if e.kind() == std::io::ErrorKind::InvalidData {
-                HttpResponse::BadRequest().json("File appears to be binary and cannot be edited as text.")
+                HttpResponse::BadRequest()
+                    .json("File appears to be binary and cannot be edited as text.")
             } else {
                 HttpResponse::InternalServerError().json(format!("Failed to read file: {}", e))
             }
@@ -136,7 +139,7 @@ pub async fn read_file(query: web::Query<FileRequest>) -> impl Responder {
 
 pub async fn write_file(body: web::Json<FileWriteRequest>) -> impl Responder {
     let path = Path::new(&body.path);
-    
+
     if path.exists() && path.is_dir() {
         return HttpResponse::BadRequest().json("Path is a directory");
     }
@@ -149,7 +152,7 @@ pub async fn write_file(body: web::Json<FileWriteRequest>) -> impl Responder {
 
 pub async fn create_item(body: web::Json<FileCreateRequest>) -> impl Responder {
     let path = Path::new(&body.path);
-    
+
     if path.exists() {
         return HttpResponse::BadRequest().json("Path already exists");
     }
@@ -157,19 +160,22 @@ pub async fn create_item(body: web::Json<FileCreateRequest>) -> impl Responder {
     if body.is_dir {
         match fs::create_dir_all(path) {
             Ok(_) => HttpResponse::Ok().json("Directory created successfully"),
-            Err(e) => HttpResponse::InternalServerError().json(format!("Failed to create directory: {}", e)),
+            Err(e) => HttpResponse::InternalServerError()
+                .json(format!("Failed to create directory: {}", e)),
         }
     } else {
         match fs::File::create(path) {
             Ok(_) => HttpResponse::Ok().json("File created successfully"),
-            Err(e) => HttpResponse::InternalServerError().json(format!("Failed to create file: {}", e)),
+            Err(e) => {
+                HttpResponse::InternalServerError().json(format!("Failed to create file: {}", e))
+            }
         }
     }
 }
 
 pub async fn delete_item(query: web::Query<FileRequest>) -> impl Responder {
     let path = Path::new(&query.path);
-    
+
     if !path.exists() {
         return HttpResponse::NotFound().json("Path does not exist");
     }
@@ -188,9 +194,11 @@ pub async fn delete_item(query: web::Query<FileRequest>) -> impl Responder {
 
 pub async fn download_file(query: web::Query<FileRequest>) -> Result<NamedFile, Error> {
     let path = PathBuf::from(&query.path);
-    
+
     if !path.exists() || path.is_dir() {
-        return Err(actix_web::error::ErrorBadRequest("Path does not exist or is a directory"));
+        return Err(actix_web::error::ErrorBadRequest(
+            "Path does not exist or is a directory",
+        ));
     }
 
     NamedFile::open(path).map_err(|e| e.into())
@@ -209,7 +217,7 @@ pub async fn upload_file(
         let content_disposition = field.content_disposition();
         if let Some(filename) = content_disposition.get_filename() {
             let filepath = target_dir.join(filename);
-            
+
             let mut f = fs::File::create(&filepath)?;
             while let Ok(Some(chunk)) = field.try_next().await {
                 f.write_all(&chunk)?;

@@ -1,4 +1,4 @@
-use actix_web::{HttpResponse, Responder, web};
+use actix_web::{web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use std::process::Command;
 use sysinfo::System;
@@ -86,7 +86,7 @@ pub async fn get_detailed_info() -> impl Responder {
         .unwrap_or(false);
 
     let smart = fetch_smart_data();
-    
+
     // Fetch CPU Temp
     let cpu_temp = Command::new("sh").arg("-c")
         .arg("cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || cat /sys/class/thermal/thermal_zone1/temp 2>/dev/null || echo 0")
@@ -99,12 +99,11 @@ pub async fn get_detailed_info() -> impl Responder {
 
     // Fetch GPU Temp (checks multiple vendors)
     let gpus = crate::api::monitor::get_gpu_stats();
-    let gpu_temp = gpus.iter()
+    let gpu_temp = gpus
+        .iter()
         .map(|g| g.temp)
         .filter(|t| *t > 0.0)
         .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-
-
 
     let info = DetailedSystemInfo {
         os_name: System::name().unwrap_or_else(|| "Unknown".to_string()),
@@ -173,8 +172,14 @@ fn fetch_smart_data() -> Option<Vec<SmartDisk>> {
                         .and_then(|s| s.get("passed"))
                         .and_then(|b| b.as_bool())
                     {
-                        if passed { "Passed".to_string() } else { "Failed".to_string() }
-                    } else { "Unknown".to_string() };
+                        if passed {
+                            "Passed".to_string()
+                        } else {
+                            "Failed".to_string()
+                        }
+                    } else {
+                        "Unknown".to_string()
+                    };
 
                     let temperature = detail_json
                         .get("temperature")
@@ -199,13 +204,19 @@ fn fetch_smart_data() -> Option<Vec<SmartDisk>> {
         }
     }
 
-    if disks.is_empty() { None } else { Some(disks) }
+    if disks.is_empty() {
+        None
+    } else {
+        Some(disks)
+    }
 }
 
 pub async fn reboot_system() -> impl Responder {
     actix_web::rt::spawn(async {
         tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
-        let _ = Command::new("sudo").args(&["-n", "shutdown", "-r", "now"]).output();
+        let _ = Command::new("sudo")
+            .args(&["-n", "shutdown", "-r", "now"])
+            .output();
         let _ = Command::new("sudo").args(&["-n", "reboot"]).output();
     });
     HttpResponse::Ok().json("Reboot initiated. Server is restarting now.")
@@ -251,7 +262,9 @@ pub async fn handle_power_action(payload: web::Json<PowerAction>) -> impl Respon
         "reboot" => {
             actix_web::rt::spawn(async {
                 tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
-                let _ = Command::new("sudo").args(&["-n", "shutdown", "-r", "now"]).output();
+                let _ = Command::new("sudo")
+                    .args(&["-n", "shutdown", "-r", "now"])
+                    .output();
                 let _ = Command::new("sudo").args(&["-n", "reboot"]).output();
             });
             HttpResponse::Ok().json("Reboot initiated. Server is restarting now.")
@@ -259,39 +272,53 @@ pub async fn handle_power_action(payload: web::Json<PowerAction>) -> impl Respon
         "shutdown" => {
             actix_web::rt::spawn(async {
                 tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
-                let _ = Command::new("sudo").args(&["-n", "shutdown", "-h", "now"]).output();
+                let _ = Command::new("sudo")
+                    .args(&["-n", "shutdown", "-h", "now"])
+                    .output();
             });
             HttpResponse::Ok().json("Shutdown initiated. Server is powering down now.")
         }
         "schedule" | "schedule_shutdown" => {
             let mins = if total_minutes > 0 { total_minutes } else { 60 };
-            let output = Command::new("sudo").args(&["-n", "shutdown", "-h", &format!("+{}", mins)]).output();
+            let output = Command::new("sudo")
+                .args(&["-n", "shutdown", "-h", &format!("+{}", mins)])
+                .output();
             match output {
                 Ok(o) if o.status.success() => {
                     HttpResponse::Ok().json(format!("Shutdown scheduled in {} minutes.", mins))
                 }
-                Ok(o) => HttpResponse::InternalServerError().json(String::from_utf8_lossy(&o.stderr)),
+                Ok(o) => {
+                    HttpResponse::InternalServerError().json(String::from_utf8_lossy(&o.stderr))
+                }
                 Err(e) => HttpResponse::InternalServerError().json(e.to_string()),
             }
         }
         "schedule_reboot" => {
             let mins = if total_minutes > 0 { total_minutes } else { 60 };
-            let output = Command::new("sudo").args(&["-n", "shutdown", "-r", &format!("+{}", mins)]).output();
+            let output = Command::new("sudo")
+                .args(&["-n", "shutdown", "-r", &format!("+{}", mins)])
+                .output();
             match output {
                 Ok(o) if o.status.success() => {
                     HttpResponse::Ok().json(format!("Reboot scheduled in {} minutes.", mins))
                 }
-                Ok(o) => HttpResponse::InternalServerError().json(String::from_utf8_lossy(&o.stderr)),
+                Ok(o) => {
+                    HttpResponse::InternalServerError().json(String::from_utf8_lossy(&o.stderr))
+                }
                 Err(e) => HttpResponse::InternalServerError().json(e.to_string()),
             }
         }
         "cancel" => {
-            let output = Command::new("sudo").args(&["-n", "shutdown", "-c"]).output();
+            let output = Command::new("sudo")
+                .args(&["-n", "shutdown", "-c"])
+                .output();
             match output {
                 Ok(o) if o.status.success() => {
                     HttpResponse::Ok().json("Scheduled power sequence successfully cancelled.")
                 }
-                Ok(o) => HttpResponse::InternalServerError().json(String::from_utf8_lossy(&o.stderr)),
+                Ok(o) => {
+                    HttpResponse::InternalServerError().json(String::from_utf8_lossy(&o.stderr))
+                }
                 Err(e) => HttpResponse::InternalServerError().json(e.to_string()),
             }
         }
@@ -336,7 +363,11 @@ fn do_memory_flush() -> MaintenanceResult {
         .status();
 
     let (_, avail_after, _, _) = get_memory_metrics_kb();
-    let freed_kb = if avail_after > avail_before { avail_after - avail_before } else { 0 };
+    let freed_kb = if avail_after > avail_before {
+        avail_after - avail_before
+    } else {
+        0
+    };
     let freed_mb = (freed_kb as f64) / 1024.0;
 
     match drop_res {
@@ -385,25 +416,58 @@ fn do_cache_clean() -> MaintenanceResult {
     let mut logs = Vec::new();
 
     // 1. Package manager cache cleaning
-    if Command::new("which").arg("apt-get").output().map(|o| o.status.success()).unwrap_or(false) {
-        let _ = Command::new("sudo").args(&["-n", "apt-get", "clean"]).output();
-        let _ = Command::new("sudo").args(&["-n", "apt-get", "autoclean"]).output();
+    if Command::new("which")
+        .arg("apt-get")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        let _ = Command::new("sudo")
+            .args(&["-n", "apt-get", "clean"])
+            .output();
+        let _ = Command::new("sudo")
+            .args(&["-n", "apt-get", "autoclean"])
+            .output();
         logs.push("Cleaned APT package cache archives.".to_string());
-    } else if Command::new("which").arg("dnf").output().map(|o| o.status.success()).unwrap_or(false) {
-        let _ = Command::new("sudo").args(&["-n", "dnf", "clean", "all"]).output();
+    } else if Command::new("which")
+        .arg("dnf")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        let _ = Command::new("sudo")
+            .args(&["-n", "dnf", "clean", "all"])
+            .output();
         logs.push("Cleaned DNF package cache archives.".to_string());
-    } else if Command::new("which").arg("pacman").output().map(|o| o.status.success()).unwrap_or(false) {
-        let _ = Command::new("sudo").args(&["-n", "pacman", "-Sc", "--noconfirm"]).output();
+    } else if Command::new("which")
+        .arg("pacman")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        let _ = Command::new("sudo")
+            .args(&["-n", "pacman", "-Sc", "--noconfirm"])
+            .output();
         logs.push("Cleaned Pacman package cache archives.".to_string());
     }
 
     // 2. Systemd journal logs vacuum (> 3 days)
-    if Command::new("which").arg("journalctl").output().map(|o| o.status.success()).unwrap_or(false) {
-        let j_res = Command::new("sudo").args(&["-n", "journalctl", "--vacuum-time=3d"]).output();
+    if Command::new("which")
+        .arg("journalctl")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        let j_res = Command::new("sudo")
+            .args(&["-n", "journalctl", "--vacuum-time=3d"])
+            .output();
         if let Ok(j) = j_res {
             let s = String::from_utf8_lossy(&j.stdout).trim().to_string();
             if !s.is_empty() {
-                logs.push(format!("Journalctl vacuum: {}", s.lines().last().unwrap_or(&s)));
+                logs.push(format!(
+                    "Journalctl vacuum: {}",
+                    s.lines().last().unwrap_or(&s)
+                ));
             } else {
                 logs.push("Vacuumed systemd journal logs older than 3 days.".to_string());
             }
@@ -412,15 +476,25 @@ fn do_cache_clean() -> MaintenanceResult {
 
     // 3. Drop filesystem caches
     let _ = Command::new("sync").status();
-    let _ = Command::new("sh").arg("-c").arg("echo 3 | sudo -n tee /proc/sys/vm/drop_caches").output();
+    let _ = Command::new("sh")
+        .arg("-c")
+        .arg("echo 3 | sudo -n tee /proc/sys/vm/drop_caches")
+        .output();
     logs.push("Dropped kernel PageCache, dentries, and inode caches.".to_string());
 
     let (_, avail_after, _, _) = get_memory_metrics_kb();
-    let freed_kb = if avail_after > avail_before { avail_after - avail_before } else { 0 };
+    let freed_kb = if avail_after > avail_before {
+        avail_after - avail_before
+    } else {
+        0
+    };
     let freed_mb = (freed_kb as f64) / 1024.0;
 
     let msg = if freed_mb > 1.0 {
-        format!("System Cache Cleaned: Package archives, journal logs, and {:.1} MB RAM freed.", freed_mb)
+        format!(
+            "System Cache Cleaned: Package archives, journal logs, and {:.1} MB RAM freed.",
+            freed_mb
+        )
     } else {
         "System Cache Cleaned: Package archives and system journal logs vacuumed.".to_string()
     };
@@ -471,7 +545,10 @@ fn do_swap_flush() -> MaintenanceResult {
         Ok(o) if o.status.success() => MaintenanceResult {
             success: true,
             action: "swap_flush".to_string(),
-            message: format!("Swap Flushed: {:.1} MB returned to RAM.", swap_used as f64 / 1024.0),
+            message: format!(
+                "Swap Flushed: {:.1} MB returned to RAM.",
+                swap_used as f64 / 1024.0
+            ),
             details: "swapoff -a && swapon -a completed successfully.".to_string(),
             freed_mb: Some(swap_used as f64 / 1024.0),
         },
@@ -576,26 +653,43 @@ pub async fn handle_maintenance_action(payload: web::Json<MaintenanceAction>) ->
 }
 
 pub async fn get_dns_info() -> impl Responder {
-    let output = Command::new("sudo").args(&["-n", "resolvectl", "statistics"]).output()
-        .or_else(|_| Command::new("sudo").args(&["-n", "systemd-resolve", "--statistics"]).output());
+    let output = Command::new("sudo")
+        .args(&["-n", "resolvectl", "statistics"])
+        .output()
+        .or_else(|_| {
+            Command::new("sudo")
+                .args(&["-n", "systemd-resolve", "--statistics"])
+                .output()
+        });
 
     match output {
         Ok(o) => {
             let stats = String::from_utf8_lossy(&o.stdout).to_string();
             HttpResponse::Ok().json(DnsInfo { stats })
         }
-        Err(e) => HttpResponse::InternalServerError().json(format!("Failed to get DNS stats: {}", e)),
+        Err(e) => {
+            HttpResponse::InternalServerError().json(format!("Failed to get DNS stats: {}", e))
+        }
     }
 }
 
 pub async fn flush_dns() -> impl Responder {
-    let output = Command::new("sudo").args(&["-n", "resolvectl", "flush-caches"]).output()
-        .or_else(|_| Command::new("sudo").args(&["-n", "systemd-resolve", "--flush-caches"]).output());
+    let output = Command::new("sudo")
+        .args(&["-n", "resolvectl", "flush-caches"])
+        .output()
+        .or_else(|_| {
+            Command::new("sudo")
+                .args(&["-n", "systemd-resolve", "--flush-caches"])
+                .output()
+        });
 
     match output {
         Ok(o) => {
-            if o.status.success() { HttpResponse::Ok().json("DNS cache flushed") }
-            else { HttpResponse::InternalServerError().json(String::from_utf8_lossy(&o.stderr)) }
+            if o.status.success() {
+                HttpResponse::Ok().json("DNS cache flushed")
+            } else {
+                HttpResponse::InternalServerError().json(String::from_utf8_lossy(&o.stderr))
+            }
         }
         Err(e) => HttpResponse::InternalServerError().json(e.to_string()),
     }
@@ -609,8 +703,6 @@ pub struct SpeedtestResult {
 }
 
 pub async fn run_speedtest() -> impl Responder {
-    
-    
     let result = actix_web::web::block(move || {
         let output = Command::new("sh")
             .arg("-c")

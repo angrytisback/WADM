@@ -1,8 +1,8 @@
 use actix_web::{HttpResponse, Responder};
-use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
 use chrono::Local;
 use log::{Level, Metadata, Record};
+use serde::{Deserialize, Serialize};
+use std::sync::Mutex;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct LogEntry {
@@ -25,8 +25,10 @@ impl LogStore {
     }
 
     pub fn add_entry(&self, level: String, message: String) {
-        if message.is_empty() { return; }
-        
+        if message.is_empty() {
+            return;
+        }
+
         let mut entries = self.entries.lock().unwrap();
         if entries.len() >= self.max_entries {
             entries.remove(0);
@@ -62,11 +64,16 @@ impl log::Log for GlobalLogger {
             let level = record.level().to_string();
             let raw_message = format!("{}", record.args());
             let message = humanize_log(&raw_message);
-            
+
             if !message.is_empty() {
                 // Always print to console for debugging
-                println!("[{}] {} - {}", Local::now().format("%Y-%m-%d %H:%M:%S"), level, message);
-                
+                println!(
+                    "[{}] {} - {}",
+                    Local::now().format("%Y-%m-%d %H:%M:%S"),
+                    level,
+                    message
+                );
+
                 // Only save Info and higher to the UI log store to prevent spam
                 if record.metadata().level() <= Level::Info {
                     self.store.add_entry(level, message);
@@ -78,9 +85,8 @@ impl log::Log for GlobalLogger {
     fn flush(&self) {}
 }
 
-pub static LOG_STORE: once_cell::sync::Lazy<LogStore> = once_cell::sync::Lazy::new(|| {
-    LogStore::new(1000)
-});
+pub static LOG_STORE: once_cell::sync::Lazy<LogStore> =
+    once_cell::sync::Lazy::new(|| LogStore::new(1000));
 
 pub fn init() {
     let logger = GlobalLogger { store: &LOG_STORE };

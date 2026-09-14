@@ -1,9 +1,9 @@
 use actix_web::{web, HttpResponse, Responder};
-use serde::{Deserialize, Serialize};
-use std::process::Command;
 use log::info;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 #[derive(Serialize, Clone)]
 pub struct AppTemplate {
@@ -20,7 +20,8 @@ pub fn get_templates() -> Vec<AppTemplate> {
             id: "nextcloud".to_string(),
             name: "Nextcloud".to_string(),
             description: "Self-hosted productivity platform.".to_string(),
-            icon: "https://upload.wikimedia.org/wikipedia/commons/6/60/Nextcloud_Logo.svg".to_string(),
+            icon: "https://upload.wikimedia.org/wikipedia/commons/6/60/Nextcloud_Logo.svg"
+                .to_string(),
             compose_yml: r#"
 version: '3'
 services:
@@ -33,13 +34,15 @@ services:
       - nextcloud_data:/var/www/html
 volumes:
   nextcloud_data:
-"#.to_string()
+"#
+            .to_string(),
         },
         AppTemplate {
             id: "pihole".to_string(),
             name: "Pi-hole".to_string(),
             description: "Network-wide Ad Blocking.".to_string(),
-            icon: "https://upload.wikimedia.org/wikipedia/en/1/15/Pi-hole_vector_logo.svg".to_string(),
+            icon: "https://upload.wikimedia.org/wikipedia/en/1/15/Pi-hole_vector_logo.svg"
+                .to_string(),
             compose_yml: r#"
 version: '3'
 services:
@@ -60,13 +63,15 @@ services:
 volumes:
   pihole_etc:
   pihole_dnsmasq:
-"#.to_string()
+"#
+            .to_string(),
         },
         AppTemplate {
             id: "wordpress".to_string(),
             name: "WordPress".to_string(),
             description: "Build a website or blog.".to_string(),
-            icon: "https://upload.wikimedia.org/wikipedia/commons/9/93/Wordpress_Blue_logo.png".to_string(),
+            icon: "https://upload.wikimedia.org/wikipedia/commons/9/93/Wordpress_Blue_logo.png"
+                .to_string(),
             compose_yml: r#"
 version: '3'
 services:
@@ -95,8 +100,9 @@ services:
 volumes:
   wordpress_data:
   db_data:
-"#.to_string()
-        }
+"#
+            .to_string(),
+        },
     ]
 }
 
@@ -116,7 +122,6 @@ pub async fn install_app(body: web::Json<AppInstallRequest>) -> impl Responder {
         None => return HttpResponse::NotFound().json("App template not found"),
     };
 
-    
     let wadm_dir = Path::new("/var/lib/wadm/apps");
     if !wadm_dir.exists() {
         let _ = fs::create_dir_all(wadm_dir);
@@ -129,24 +134,26 @@ pub async fn install_app(body: web::Json<AppInstallRequest>) -> impl Responder {
 
     let compose_file = app_dir.join("docker-compose.yml");
     if let Err(e) = fs::write(&compose_file, &template.compose_yml) {
-        return HttpResponse::InternalServerError().json(format!("Failed to write compose file: {}", e));
+        return HttpResponse::InternalServerError()
+            .json(format!("Failed to write compose file: {}", e));
     }
 
     info!("Installing app {} via docker-compose...", template.name);
 
-    
-    
     actix_web::rt::spawn(async move {
         let _ = Command::new("sudo")
             .args(&["-n", "docker-compose", "up", "-d"])
             .current_dir(&app_dir)
             .output();
-        
+
         let _ = Command::new("sudo")
             .args(&["-n", "docker", "compose", "up", "-d"])
             .current_dir(&app_dir)
             .output();
     });
 
-    HttpResponse::Ok().json(format!("{} is installing in the background.", template.name))
+    HttpResponse::Ok().json(format!(
+        "{} is installing in the background.",
+        template.name
+    ))
 }
