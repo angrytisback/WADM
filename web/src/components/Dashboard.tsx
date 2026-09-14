@@ -1,14 +1,14 @@
 import { useState, useEffect } from 'react';
 import { CircularProgress } from './CircularProgress';
 import { SplitCircularProgress } from './SplitCircularProgress';
-import type { SystemStats } from '../types';
+import type { SystemStats, GpuStats } from '../types';
+import { useToast } from '../context/ToastContext';
+import { useSystem } from '../context/SystemContext';
 
 interface DashboardProps {
     stats: SystemStats | null;
     onNavigate: (tab: string) => void;
 }
-
-
 
 const formatUptime = (seconds: number) => {
     const days = Math.floor(seconds / (3600 * 24));
@@ -16,7 +16,6 @@ const formatUptime = (seconds: number) => {
     const minutes = Math.floor((seconds % 3600) / 60);
     return `${days}d ${hours}h ${minutes}m`;
 };
-
 
 const Icons = {
     Chart: () => <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>,
@@ -29,22 +28,44 @@ const Icons = {
 };
 
 export default function Dashboard({ stats, onNavigate }: DashboardProps) {
+    const { addToast } = useToast();
+    const { systemInfo } = useSystem();
+    const canManage = systemInfo?.is_root || systemInfo?.has_sudo;
+    const privilegeHint = !canManage ? "Root or Sudo privileges required" : "";
+    const [updatingAll, setUpdatingAll] = useState(false);
+    const [flushingMem, setFlushingMem] = useState(false);
+
+    const handleQuickFlush = async () => {
+        setFlushingMem(true);
+        try {
+            const res = await fetch('/api/system/maintenance', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'memory_flush' })
+            });
+            const data = await res.json();
+            if (res.ok && data.success !== false) {
+                addToast(data.message || 'RAM Flushed successfully', 'success');
+            } else {
+                addToast(data.message || 'Flush failed', 'error');
+            }
+        } catch {
+            addToast('Network error during memory flush', 'error');
+        } finally {
+            setFlushingMem(false);
+        }
+    };
+
     if (!stats) return <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-secondary)' }}>Loading System Stats...</div>;
 
     const memPercent = (stats.ram_used / stats.ram_total) * 100;
     const swapPercent = stats.swap_total > 0 ? (stats.swap_used / stats.swap_total) * 100 : 0;
 
-    
-    
-    
     const rxRate = stats.network_rx / 2;
     const txRate = stats.network_tx / 2;
-
-    const maxSpeed = stats.network_max_speed || 125000000; 
+    const maxSpeed = stats.network_max_speed || 125000000;
     const rxPercent = (rxRate / maxSpeed) * 100;
     const txPercent = (txRate / maxSpeed) * 100;
-
-
 
     const formatRate = (bytes: number) => {
         if (bytes === 0) return '0 B/s';
@@ -61,16 +82,25 @@ export default function Dashboard({ stats, onNavigate }: DashboardProps) {
         </div>
     );
 
+    const gpuContent = (gpu: GpuStats) => {
+        const vramPercent = gpu.vram_total > 0 ? (gpu.vram_used / gpu.vram_total) * 100 : 0;
+        return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', alignItems: 'center' }}>
+                <span style={{ color: '#818cf8', fontSize: '0.85rem', fontWeight: 700 }}>{Math.round(gpu.load)}%</span>
+                <span style={{ color: '#a5b4fc', fontSize: '0.85rem', fontWeight: 700 }}>{Math.round(vramPercent)}%</span>
+            </div>
+        );
+    };
+
+
     return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem', height: '100%' }}>
-            {/* Main Grid */}
             <div className="dashboard-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '1.5rem' }}>
 
                 {/* 1. System Load */}
                 <div
                     className="glass-panel"
-                    onClick={() => onNavigate('usage')}
-                    style={{ padding: '2rem', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: '1.5rem', gridColumn: '1 / -1' }}
+                    style={{ padding: '2rem', display: 'flex', flexDirection: 'column', gap: '1.5rem', gridColumn: '1 / -1', overflow: 'hidden' }}
                 >
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
@@ -79,31 +109,96 @@ export default function Dashboard({ stats, onNavigate }: DashboardProps) {
                             </div>
                             <h3 style={{ fontSize: '1.25rem', margin: 0, fontWeight: 600 }}>System Load</h3>
                         </div>
-                        <span style={{ fontSize: '0.9rem', color: 'var(--accent-color)', fontWeight: 500 }}>View Details →</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                            <button
+                                onClick={handleQuickFlush}
+                                disabled={flushingMem || !canManage}
+                                style={{
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '0.4rem',
+                                    background: 'rgba(52, 211, 153, 0.15)',
+                                    color: '#34d399',
+                                    border: '1px solid rgba(52, 211, 153, 0.3)',
+                                    borderRadius: '6px',
+                                    padding: '0.35rem 0.75rem',
+                                    fontSize: '0.8rem',
+                                    cursor: (flushingMem || !canManage) ? 'not-allowed' : 'pointer',
+                                    fontWeight: 600,
+                                    opacity: !canManage ? 0.6 : 1
+                                }}
+                                title={!canManage ? privilegeHint : "Quickly drop PageCache, dentries, and inodes to reclaim RAM"}
+                            >
+                                ⚡ {flushingMem ? 'Flushing...' : 'Flush RAM'}
+                            </button>
+                            <span onClick={() => onNavigate('usage')} style={{ fontSize: '0.9rem', color: 'var(--accent-color)', fontWeight: 500, cursor: 'pointer' }}>View Details →</span>
+                        </div>
                     </div>
-                    <div style={{ display: 'flex', gap: '3rem', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap' }}>
-                        <CircularProgress value={stats.cpu_usage} color="var(--accent-color)" size={140} strokeWidth={12} label="CPU" />
-                        <CircularProgress value={memPercent} color="#34d399" size={140} strokeWidth={12} label="RAM" />
-                        {stats.swap_total > 0 && (
-                            <CircularProgress value={swapPercent} color="#f59e0b" size={140} strokeWidth={12} label="Swap" />
+
+                    <div style={{ 
+                        display: 'flex', 
+                        gap: '2.5rem', 
+                        overflowX: 'auto', 
+                        padding: '0.5rem 1rem 1.5rem 1rem',
+                        justifyContent: stats.gpus.length > 2 ? 'flex-start' : 'center',
+                        alignItems: 'center',
+                        scrollbarWidth: 'thin',
+                        scrollbarColor: 'var(--glass-border) transparent'
+                    }} className="custom-scroll">
+                        <div style={{ flexShrink: 0 }}><CircularProgress value={stats.cpu_usage} color="var(--accent-color)" size={130} strokeWidth={10} label="CPU" /></div>
+                        <div style={{ flexShrink: 0 }}><CircularProgress value={memPercent} color="#34d399" size={130} strokeWidth={10} label="RAM" /></div>
+                        
+                        {stats.gpus.map((gpu, idx) => (
+                            <div key={idx} style={{ flexShrink: 0 }}>
+                                <SplitCircularProgress 
+                                    leftValue={gpu.load}
+                                    rightValue={gpu.vram_total > 0 ? (gpu.vram_used / gpu.vram_total) * 100 : 0}
+                                    size={130}
+                                    strokeWidth={10}
+                                    label={gpu.vendor}
+                                    sublabel={gpu.name.split(' - ')[1]?.split(' ')[0] || gpu.name}
+
+                                    customValueText={gpu.error ? (
+                                        <div style={{ color: 'var(--warning)', fontSize: '0.7rem', textAlign: 'center' }}>DRV ERR</div>
+                                    ) : gpuContent(gpu)}
+                                />
+                            </div>
+                        ))}
+
+                        {stats.swap_total > 0 && stats.gpus.length === 0 && (
+                            <div style={{ flexShrink: 0 }}><CircularProgress value={swapPercent} color="#f59e0b" size={130} strokeWidth={10} label="Swap" /></div>
                         )}
-                        <SplitCircularProgress
-                            leftValue={rxPercent}
-                            rightValue={txPercent}
-                            size={140}
-                            strokeWidth={12}
-                            label="Network"
-                            sublabel={stats.network_interface}
-                            customValueText={networkContent}
-                        />
+                        
+                        <div style={{ flexShrink: 0 }}>
+                            <SplitCircularProgress
+                                leftValue={rxPercent}
+                                rightValue={txPercent}
+                                size={130}
+                                strokeWidth={10}
+                                label="Network"
+                                sublabel={stats.network_interface}
+                                customValueText={networkContent}
+                            />
+                        </div>
                     </div>
+
+                    {stats.gpus.some(g => g.error) && (
+                        <div style={{ 
+                            fontSize: '0.85rem', color: 'var(--warning)', textAlign: 'center', 
+                            padding: '0.5rem', background: 'rgba(251, 191, 36, 0.05)', borderRadius: '8px',
+                            border: '1px solid rgba(251, 191, 36, 0.1)'
+                        }}>
+                            <strong>Notice:</strong> One or more GPUs reported driver issues. Ensure appropriate SMI tools are installed.
+                        </div>
+                    )}
                 </div>
 
                 {/* 2. Docker Containers */}
                 <div
                     className="glass-panel"
-                    onClick={() => onNavigate('docker')}
-                    style={{ padding: '2rem', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: '1rem', alignItems: 'center', justifyContent: 'center' }}
+                    onClick={() => canManage ? onNavigate('docker') : addToast(privilegeHint, "warning")}
+                    style={{ padding: '2rem', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: '1rem', alignItems: 'center', justifyContent: 'center', opacity: !canManage ? 0.7 : 1 }}
+                    title={privilegeHint}
                 >
                     <div style={{ padding: '1rem', background: 'rgba(59, 130, 246, 0.1)', borderRadius: '50%', color: '#3b82f6', marginBottom: '0.5rem' }}>
                         <Icons.Box />
@@ -123,8 +218,9 @@ export default function Dashboard({ stats, onNavigate }: DashboardProps) {
                     style={{ padding: '2rem', display: 'flex', flexDirection: 'column', gap: '1rem', alignItems: 'center', justifyContent: 'center', position: 'relative' }}
                 >
                     <div
-                        onClick={() => onNavigate('packages')}
-                        style={{ cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%' }}
+                        onClick={() => canManage ? onNavigate('packages') : addToast(privilegeHint, "warning")}
+                        style={{ cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%', opacity: !canManage ? 0.7 : 1 }}
+                        title={privilegeHint}
                     >
                         <div style={{ padding: '1rem', background: 'rgba(245, 158, 11, 0.1)', borderRadius: '50%', color: '#f59e0b', marginBottom: '0.5rem' }}>
                             <Icons.Package />
@@ -141,17 +237,27 @@ export default function Dashboard({ stats, onNavigate }: DashboardProps) {
                         <button
                             className="btn-primary"
                             style={{ marginTop: '0.5rem', width: '80%', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '0.5rem' }}
-                            onClick={(e) => {
+                            disabled={updatingAll || !canManage}
+                            title={privilegeHint}
+                            onClick={async (e) => {
                                 e.stopPropagation();
-                                fetch('/api/packages/update-all', { method: 'POST' })
-                                    .then(res => {
-                                        if (res.ok) alert('System update started. This may take a while.');
-                                        else alert('Failed to start update.');
-                                    })
-                                    .catch(() => alert('Network error'));
+                                if (!canManage) return;
+                                setUpdatingAll(true);
+                                try {
+                                    const res = await fetch('/api/packages/update-all', { method: 'POST' });
+                                    if (res.ok) {
+                                        addToast('System update started. This may take a while.', 'success');
+                                    } else {
+                                        addToast('Failed to start update.', 'error');
+                                    }
+                                } catch {
+                                    addToast('Network error', 'error');
+                                } finally {
+                                    setUpdatingAll(false);
+                                }
                             }}
                         >
-                            Update All
+                            {updatingAll ? 'Updating...' : 'Update All'}
                         </button>
                     )}
                 </div>
@@ -159,8 +265,9 @@ export default function Dashboard({ stats, onNavigate }: DashboardProps) {
                 {/* 4. Active Services */}
                 <div
                     className="glass-panel"
-                    onClick={() => onNavigate('services')}
-                    style={{ padding: '2rem', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: '1rem', alignItems: 'center', justifyContent: 'center' }}
+                    onClick={() => canManage ? onNavigate('services') : addToast(privilegeHint, "warning")}
+                    style={{ padding: '2rem', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: '1rem', alignItems: 'center', justifyContent: 'center', opacity: !canManage ? 0.7 : 1 }}
+                    title={privilegeHint}
                 >
                     <div style={{ padding: '1rem', background: 'rgba(16, 185, 129, 0.1)', borderRadius: '50%', color: '#10b981', marginBottom: '0.5rem' }}>
                         <Icons.Server />
@@ -177,8 +284,9 @@ export default function Dashboard({ stats, onNavigate }: DashboardProps) {
                 {/* 5. System Health */}
                 <div
                     className="glass-panel"
-                    onClick={() => onNavigate('services')}
-                    style={{ padding: '2rem', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: '1rem', alignItems: 'center', justifyContent: 'center' }}
+                    onClick={() => canManage ? onNavigate('services') : addToast(privilegeHint, "warning")}
+                    style={{ padding: '2rem', cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: '1rem', alignItems: 'center', justifyContent: 'center', opacity: !canManage ? 0.7 : 1 }}
+                    title={privilegeHint}
                 >
                     <div style={{ padding: '1rem', background: stats.failed_services > 0 ? 'rgba(239, 68, 68, 0.1)' : 'rgba(16, 185, 129, 0.1)', borderRadius: '50%', color: stats.failed_services > 0 ? '#ef4444' : '#10b981', marginBottom: '0.5rem' }}>
                         {stats.failed_services > 0 ? <Icons.Alert /> : <Icons.Check />}
@@ -196,7 +304,6 @@ export default function Dashboard({ stats, onNavigate }: DashboardProps) {
 
             </div>
 
-            {/* Footer / System Info Area */}
             <div style={{ marginTop: 'auto', paddingTop: '2rem' }}>
                 <DashboardFooter />
             </div>
@@ -217,7 +324,7 @@ function DashboardFooter() {
     if (!info) return null;
 
     return (
-        <div className="glass-panel" style={{ padding: '1.5rem', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1.5rem' }}>
+        <div className="glass-panel" style={{ padding: '1.5rem', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '1.5rem' }}>
             <div>
                 <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '0.2rem' }}>HOSTNAME</div>
                 <div style={{ fontWeight: 600, fontSize: '1.1rem' }}>{info.host_name}</div>
@@ -227,12 +334,20 @@ function DashboardFooter() {
                 <div style={{ fontWeight: 500 }}>{info.os_name} {info.os_version}</div>
             </div>
             <div>
-                <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '0.2rem' }}>KERNEL</div>
-                <div style={{ fontFamily: 'monospace' }}>{info.kernel_version}</div>
-            </div>
-            <div>
                 <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '0.2rem' }}>UPTIME</div>
                 <div style={{ fontWeight: 500 }}>{formatUptime(info.uptime)}</div>
+            </div>
+            <div>
+                <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '0.2rem' }}>TEMPERATURES</div>
+                <div style={{ display: 'flex', gap: '1rem', fontWeight: 600 }}>
+                    {info.cpu_temp && (
+                        <div style={{ color: '#34d399' }}>CPU: {info.cpu_temp.toFixed(1)}°C</div>
+                    )}
+                    {info.gpu_temp && (
+                        <div style={{ color: '#818cf8' }}>GPU: {info.gpu_temp.toFixed(0)}°C</div>
+                    )}
+                    {!info.cpu_temp && !info.gpu_temp && <div style={{ color: 'var(--text-secondary)' }}>N/A</div>}
+                </div>
             </div>
         </div>
     );

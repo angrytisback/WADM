@@ -16,7 +16,7 @@ async fn health_check() -> impl Responder {
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
+    api::logs::init();
 
     let port = 8168;
     log::info!("Starting WADM server on port {}", port);
@@ -57,33 +57,9 @@ async fn main() -> std::io::Result<()> {
             .app_data(auth_store.clone())
             .app_data(app_config.clone())
             .wrap(cors)
-            .wrap(actix_web::middleware::Logger::default())
+            .wrap(actix_web::middleware::Logger::new("REQ|%m|%U|%s"))
             .route("/api/health", web::get().to(health_check))
-            .route("/api/packages", web::get().to(api::pkgmgr::list_packages))
-            .route(
-                "/api/packages/installed",
-                web::get().to(api::pkgmgr::list_installed_packages),
-            )
-            .route(
-                "/api/packages/upgrade",
-                web::post().to(api::pkgmgr::upgrade_package),
-            )
-            .route(
-                "/api/packages/install",
-                web::post().to(api::pkgmgr::install_package),
-            )
-            .route(
-                "/api/packages/update-all",
-                web::post().to(api::pkgmgr::update_all_packages),
-            )
-            .route(
-                "/api/packages/remove",
-                web::post().to(api::pkgmgr::remove_package),
-            )
-            .route(
-                "/api/packages/remove-dry-run",
-                web::post().to(api::pkgmgr::remove_package_dry_run),
-            )
+
             .service(
                 web::scope("/api")
                     .wrap(Auth) 

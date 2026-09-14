@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useToast } from '../context/ToastContext';
+import { FaTools } from 'react-icons/fa';
 
 interface Config {
     developer_mode: boolean;
@@ -51,7 +52,7 @@ export default function Settings() {
 
             <div className="glass-panel" style={{ padding: '2rem' }}>
                 <h2 style={{ fontSize: '1.25rem', fontWeight: 600, marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <span role="img" aria-label="tools">🛠️</span> Developer Options
+                    <FaTools /> Developer Options
                 </h2>
 
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1.5rem', background: 'rgba(255,255,255,0.03)', borderRadius: '12px' }}>

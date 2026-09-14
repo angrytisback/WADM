@@ -87,7 +87,7 @@ where
 
         
         
-        let secret = b"super_secret_key_change_this_in_prod";
+        let secret = crate::api::auth::JWT_SECRET.as_slice();
 
         match decode::<Claims>(
             token,

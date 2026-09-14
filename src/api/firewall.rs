@@ -36,9 +36,7 @@ pub async fn get_status() -> impl Responder {
     }
 
     let output = Command::new("sudo")
-        .arg("ufw")
-        .arg("status")
-        .arg("numbered")
+        .args(&["-n", "ufw", "status", "numbered"])
         .output();
 
     match output {
@@ -75,7 +73,7 @@ pub async fn install_ufw() -> impl Responder {
         }
     };
 
-    let output = Command::new("sudo").arg(cmd).args(args).output();
+    let output = Command::new("sudo").arg("-n").arg(cmd).args(args).output();
 
     match output {
         Ok(o) => {
@@ -103,10 +101,10 @@ pub async fn set_status(body: web::Json<FirewallAction>) -> impl Responder {
     let status = if arg == "enable" {
         Command::new("sh")
             .arg("-c")
-            .arg("yes | sudo ufw enable")
+            .arg("yes | sudo -n ufw enable")
             .status()
     } else {
-        Command::new("sudo").arg("ufw").arg("disable").status()
+        Command::new("sudo").args(&["-n", "ufw", "disable"]).status()
     };
 
     match status {
@@ -133,7 +131,7 @@ pub async fn add_rule(body: web::Json<FirewallRuleData>) -> impl Responder {
         return HttpResponse::BadRequest().json("Rule cannot be empty");
     }
 
-    let status = Command::new("sudo").arg("ufw").args(args).status();
+    let status = Command::new("sudo").arg("-n").arg("ufw").args(args).status();
 
     match status {
         Ok(s) => {
@@ -157,15 +155,12 @@ pub async fn delete_rule(body: web::Json<FirewallRuleData>) -> impl Responder {
         return HttpResponse::BadRequest().json("Rule cannot be empty");
     }
 
-    let mut command = Command::new("sudo");
-    command.arg("ufw").arg("delete");
-    command.args(args);
 
     
     
     let status = Command::new("sh")
         .arg("-c")
-        .arg(format!("yes | sudo ufw delete {}", body.rule))
+        .arg(format!("yes | sudo -n ufw delete {}", body.rule))
         .status();
 
     match status {

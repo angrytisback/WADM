@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useToast } from '../context/ToastContext';
+import { useSystem } from '../context/SystemContext';
 
 interface Service {
     name: string;
@@ -10,10 +11,13 @@ interface Service {
 export default function Services() {
     const [services, setServices] = useState<Service[]>([]);
     const [loading, setLoading] = useState(true);
-    const [actionLoading, setActionLoading] = useState<string | null>(null);
+    const { systemInfo } = useSystem();
+    const canManage = systemInfo?.is_root || systemInfo?.has_sudo;
+    const privilegeHint = !canManage ? "Root or Sudo privileges required for this action" : "";
     const [searchQuery, setSearchQuery] = useState('');
     const [logs, setLogs] = useState<string | null>(null);
     const [viewingLogs, setViewingLogs] = useState<string | null>(null);
+    const [actionState, setActionState] = useState<{ name: string, action: string } | null>(null);
     const { addToast } = useToast();
 
     const fetchServices = useCallback(async () => {
@@ -33,7 +37,7 @@ export default function Services() {
     }, [fetchServices]);
 
     const handleAction = async (name: string, action: string) => {
-        setActionLoading(name);
+        setActionState({ name, action });
         try {
             const res = await fetch(`/api/services/${name}`, {
                 method: 'POST',
@@ -42,7 +46,7 @@ export default function Services() {
             });
             if (res.ok) {
                 addToast(`Service ${name} ${action}ed`, 'success');
-                
+
                 fetchServices();
                 setTimeout(fetchServices, 1000);
                 setTimeout(fetchServices, 3000);
@@ -54,7 +58,7 @@ export default function Services() {
             console.error(err);
             addToast('Network error', 'error');
         } finally {
-            setActionLoading(null);
+            setActionState(null);
         }
     };
 
@@ -134,16 +138,22 @@ export default function Services() {
                                             <button
                                                 className="btn-sm warning"
                                                 onClick={() => handleAction(svc.name, 'restart')}
-                                                disabled={actionLoading === svc.name}
+                                                disabled={!!actionState || !canManage}
+                                                title={privilegeHint}
+                                                style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', opacity: !canManage ? 0.5 : 1 }}
                                             >
-                                                Restart
+                                                {actionState?.name === svc.name && actionState.action === 'restart' && <span className="spinner" style={{ width: '0.7rem', height: '0.7rem' }}></span>}
+                                                {actionState?.name === svc.name && actionState.action === 'restart' ? 'Restarting...' : 'Restart'}
                                             </button>
                                             <button
                                                 className="btn-sm error"
                                                 onClick={() => handleAction(svc.name, 'stop')}
-                                                disabled={actionLoading === svc.name}
+                                                disabled={!!actionState || !canManage}
+                                                title={privilegeHint}
+                                                style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', opacity: !canManage ? 0.5 : 1 }}
                                             >
-                                                Stop
+                                                {actionState?.name === svc.name && actionState.action === 'stop' && <span className="spinner" style={{ width: '0.7rem', height: '0.7rem' }}></span>}
+                                                {actionState?.name === svc.name && actionState.action === 'stop' ? 'Stopping...' : 'Stop'}
                                             </button>
                                         </>
                                     ) : (
@@ -151,16 +161,22 @@ export default function Services() {
                                             <button
                                                 className="btn-sm success"
                                                 onClick={() => handleAction(svc.name, 'start')}
-                                                disabled={actionLoading === svc.name}
+                                                disabled={!!actionState || !canManage}
+                                                title={privilegeHint}
+                                                style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', opacity: !canManage ? 0.5 : 1 }}
                                             >
-                                                Start
+                                                {actionState?.name === svc.name && actionState.action === 'start' && <span className="spinner" style={{ width: '0.7rem', height: '0.7rem' }}></span>}
+                                                {actionState?.name === svc.name && actionState.action === 'start' ? 'Starting...' : 'Start'}
                                             </button>
                                             <button
                                                 className="btn-sm"
                                                 onClick={() => handleAction(svc.name, 'enable')}
-                                                disabled={actionLoading === svc.name}
+                                                disabled={!!actionState || !canManage}
+                                                title={privilegeHint}
+                                                style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', opacity: !canManage ? 0.5 : 1 }}
                                             >
-                                                Enable
+                                                {actionState?.name === svc.name && actionState.action === 'enable' && <span className="spinner" style={{ width: '0.7rem', height: '0.7rem' }}></span>}
+                                                {actionState?.name === svc.name && actionState.action === 'enable' ? 'Enabling...' : 'Enable'}
                                             </button>
                                         </>
                                     )}

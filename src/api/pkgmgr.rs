@@ -1,6 +1,7 @@
 use actix_web::{web, HttpResponse, Responder};
 use serde::{Deserialize, Serialize};
 use std::process::Command;
+use log::info;
 
 #[derive(Serialize)]
 struct Package {
@@ -59,8 +60,8 @@ pub fn detect_manager() -> ManagerType {
 
 fn list_packages_pacman() -> Result<Vec<Package>, String> {
     
-    let output = Command::new("pacman")
-        .arg("-Qu")
+    let output = Command::new("sudo")
+        .args(&["-n", "pacman", "-Qu"])
         .output()
         .map_err(|e| e.to_string())?;
 
@@ -106,9 +107,8 @@ fn list_packages_apt() -> Result<Vec<Package>, String> {
     
     
 
-    let output = Command::new("apt")
-        .arg("list")
-        .arg("--upgradable")
+    let output = Command::new("sudo")
+        .args(&["-n", "apt", "list", "--upgradable"])
         .output()
         .map_err(|e| e.to_string())?;
 
@@ -142,8 +142,8 @@ fn list_packages_apt() -> Result<Vec<Package>, String> {
 fn list_packages_dnf() -> Result<Vec<Package>, String> {
     
     
-    let output = Command::new("dnf")
-        .arg("check-update")
+    let output = Command::new("sudo")
+        .args(&["-n", "dnf", "check-update"])
         .output()
         .map_err(|e| e.to_string())?;
 
@@ -183,7 +183,14 @@ fn list_packages_dnf() -> Result<Vec<Package>, String> {
 
 
 
+fn is_valid_package_name(name: &str) -> bool {
+    !name.is_empty() && !name.starts_with('-') && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+}
+
 fn upgrade_package_impl(manager: &ManagerType, name: &str) -> Result<String, String> {
+    if !is_valid_package_name(name) {
+        return Err("Invalid package name".to_string());
+    }
     let (cmd, args) = match manager {
         ManagerType::Pacman => ("pacman", vec!["-S", "--noconfirm", name]),
         ManagerType::Apt => ("apt-get", vec!["install", "-y", "--only-upgrade", name]),
@@ -191,12 +198,15 @@ fn upgrade_package_impl(manager: &ManagerType, name: &str) -> Result<String, Str
         ManagerType::Unknown => return Err("Unknown package manager".to_string()),
     };
 
-    let output = Command::new(cmd)
+    info!("Attempting to update package: {} using {:?}", name, manager);
+    let output = Command::new("sudo")
+        .args(&["-n", cmd])
         .args(args)
         .output()
         .map_err(|e| e.to_string())?;
 
     if output.status.success() {
+        info!("Successfully updated package: {}", name);
         Ok(format!("Package {} updated successfully", name))
     } else {
         Err(String::from_utf8_lossy(&output.stderr).to_string())
@@ -204,6 +214,9 @@ fn upgrade_package_impl(manager: &ManagerType, name: &str) -> Result<String, Str
 }
 
 fn install_package_impl(manager: &ManagerType, name: &str) -> Result<String, String> {
+    if !is_valid_package_name(name) {
+        return Err("Invalid package name".to_string());
+    }
     let (cmd, args) = match manager {
         ManagerType::Pacman => ("pacman", vec!["-S", "--noconfirm", name]),
         ManagerType::Apt => ("apt-get", vec!["install", "-y", name]),
@@ -211,12 +224,15 @@ fn install_package_impl(manager: &ManagerType, name: &str) -> Result<String, Str
         ManagerType::Unknown => return Err("Unknown package manager".to_string()),
     };
 
-    let output = Command::new(cmd)
+    info!("Attempting to install package: {} using {:?}", name, manager);
+    let output = Command::new("sudo")
+        .args(&["-n", cmd])
         .args(args)
         .output()
         .map_err(|e| e.to_string())?;
 
     if output.status.success() {
+        info!("Successfully installed package: {}", name);
         Ok(format!("Package {} installed successfully", name))
     } else {
         Err(String::from_utf8_lossy(&output.stderr).to_string())
@@ -241,7 +257,9 @@ pub fn count_upgradable_packages() -> u32 {
 }
 
 pub async fn list_packages() -> impl Responder {
+    log::debug!("Request: list_packages");
     let manager = detect_manager();
+    log::debug!("Using manager: {:?}", manager);
     let result = match manager {
         ManagerType::Pacman => list_packages_pacman(),
         ManagerType::Apt => list_packages_apt(),
@@ -252,31 +270,42 @@ pub async fn list_packages() -> impl Responder {
     };
 
     match result {
-        Ok(pkgs) => HttpResponse::Ok().json(pkgs),
+        Ok(pkgs) => {
+            log::debug!("Found {} upgradable packages", pkgs.len());
+            HttpResponse::Ok().json(pkgs)
+        },
         Err(e) => {
-            eprintln!("List packages failed: {}", e);
+            log::error!("List packages failed: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse { error: e })
         }
     }
 }
 
 pub async fn upgrade_package(body: web::Json<PackageAction>) -> impl Responder {
+    log::info!("Request: upgrade_package {}", body.name);
     let manager = detect_manager();
     match upgrade_package_impl(&manager, &body.name) {
-        Ok(msg) => HttpResponse::Ok().json(msg),
+        Ok(msg) => {
+            log::info!("Upgrade success: {}", msg);
+            HttpResponse::Ok().json(msg)
+        },
         Err(e) => {
-            eprintln!("Upgrade package failed: {}", e);
+            log::error!("Upgrade package failed: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse { error: e })
         }
     }
 }
 
 pub async fn install_package(body: web::Json<PackageAction>) -> impl Responder {
+    log::info!("Request: install_package {}", body.name);
     let manager = detect_manager();
     match install_package_impl(&manager, &body.name) {
-        Ok(msg) => HttpResponse::Ok().json(msg),
+        Ok(msg) => {
+            log::info!("Install success: {}", msg);
+            HttpResponse::Ok().json(msg)
+        },
         Err(e) => {
-            eprintln!("Install package failed: {}", e);
+            log::error!("Install package failed: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse { error: e })
         }
     }
@@ -286,8 +315,8 @@ pub async fn install_package(body: web::Json<PackageAction>) -> impl Responder {
 
 fn list_installed_packages_pacman() -> Result<Vec<Package>, String> {
     
-    let output = Command::new("pacman")
-        .arg("-Q")
+    let output = Command::new("sudo")
+        .args(&["-n", "pacman", "-Q"])
         .output()
         .map_err(|e| e.to_string())?;
 
@@ -347,8 +376,8 @@ fn list_installed_packages_apt() -> Result<Vec<Package>, String> {
 
 fn list_installed_packages_dnf() -> Result<Vec<Package>, String> {
     
-    let output = Command::new("dnf")
-        .args(&["list", "installed", "-q"]) 
+    let output = Command::new("sudo")
+        .args(&["-n", "dnf", "list", "installed", "-q"])
         .output()
         .map_err(|e| e.to_string())?;
 
@@ -388,10 +417,11 @@ fn update_all_packages_impl(manager: &ManagerType) -> Result<String, String> {
 
     
     if let ManagerType::Apt = manager {
-        let _ = Command::new("apt-get").arg("update").output();
+        let _ = Command::new("sudo").args(&["-n", "apt-get", "update"]).output();
     }
 
-    let output = Command::new(cmd)
+    let output = Command::new("sudo")
+        .args(&["-n", cmd])
         .args(args)
         .output()
         .map_err(|e| e.to_string())?;
@@ -404,19 +434,22 @@ fn update_all_packages_impl(manager: &ManagerType) -> Result<String, String> {
 }
 
 fn remove_package_dry_run_impl(manager: &ManagerType, name: &str) -> Result<String, String> {
+    if !is_valid_package_name(name) {
+        return Err("Invalid package name".to_string());
+    }
     match manager {
         ManagerType::Pacman => {
             
-            let output = Command::new("pacman")
-                .args(&["-Rns", name, "-p"])
+            let output = Command::new("sudo")
+                .args(&["-n", "pacman", "-Rns", name, "-p"])
                 .output()
                 .map_err(|e| e.to_string())?;
             Ok(String::from_utf8_lossy(&output.stdout).to_string())
         }
         ManagerType::Apt => {
             
-            let output = Command::new("apt-get")
-                .args(&["remove", "-s", name])
+            let output = Command::new("sudo")
+                .args(&["-n", "apt-get", "remove", "-s", name])
                 .output()
                 .map_err(|e| e.to_string())?;
             Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -424,8 +457,8 @@ fn remove_package_dry_run_impl(manager: &ManagerType, name: &str) -> Result<Stri
         ManagerType::Dnf => {
             
             
-            let output = Command::new("dnf")
-                .args(&["remove", name, "--assumeno"])
+            let output = Command::new("sudo")
+                .args(&["-n", "dnf", "remove", name, "--assumeno"])
                 .output()
                 .map_err(|e| e.to_string())?;
             
@@ -436,6 +469,9 @@ fn remove_package_dry_run_impl(manager: &ManagerType, name: &str) -> Result<Stri
 }
 
 fn remove_package_impl(manager: &ManagerType, name: &str) -> Result<String, String> {
+    if !is_valid_package_name(name) {
+        return Err("Invalid package name".to_string());
+    }
     let (cmd, args) = match manager {
         ManagerType::Pacman => ("pacman", vec!["-Rns", "--noconfirm", name]),
         ManagerType::Apt => ("apt-get", vec!["remove", "-y", name]),
@@ -443,12 +479,15 @@ fn remove_package_impl(manager: &ManagerType, name: &str) -> Result<String, Stri
         ManagerType::Unknown => return Err("Unknown package manager".to_string()),
     };
 
-    let output = Command::new(cmd)
+    info!("Attempting to remove package: {} using {:?}", name, manager);
+    let output = Command::new("sudo")
+        .args(&["-n", cmd])
         .args(args)
         .output()
         .map_err(|e| e.to_string())?;
 
     if output.status.success() {
+        info!("Successfully removed package: {}", name);
         Ok(format!("Package {} removed successfully", name))
     } else {
         Err(String::from_utf8_lossy(&output.stderr).to_string())
@@ -458,6 +497,7 @@ fn remove_package_impl(manager: &ManagerType, name: &str) -> Result<String, Stri
 
 
 pub async fn list_installed_packages() -> impl Responder {
+    log::debug!("Request: list_installed_packages");
     let manager = detect_manager();
     let result = match manager {
         ManagerType::Pacman => list_installed_packages_pacman(),
@@ -467,31 +507,58 @@ pub async fn list_installed_packages() -> impl Responder {
     };
 
     match result {
-        Ok(pkgs) => HttpResponse::Ok().json(pkgs),
-        Err(e) => HttpResponse::InternalServerError().json(ErrorResponse { error: e }),
+        Ok(pkgs) => {
+            log::debug!("Found {} installed packages", pkgs.len());
+            HttpResponse::Ok().json(pkgs)
+        },
+        Err(e) => {
+            log::error!("List installed packages failed: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse { error: e })
+        },
     }
 }
 
 pub async fn update_all_packages() -> impl Responder {
+    log::info!("Request: update_all_packages");
     let manager = detect_manager();
     match update_all_packages_impl(&manager) {
-        Ok(msg) => HttpResponse::Ok().json(msg),
-        Err(e) => HttpResponse::InternalServerError().json(ErrorResponse { error: e }),
+        Ok(msg) => {
+            log::info!("Global update success: {}", msg);
+            HttpResponse::Ok().json(msg)
+        },
+        Err(e) => {
+            log::error!("Global update failed: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse { error: e })
+        },
     }
 }
 
 pub async fn remove_package_dry_run(body: web::Json<PackageAction>) -> impl Responder {
+    log::debug!("Request: remove_package_dry_run {}", body.name);
     let manager = detect_manager();
     match remove_package_dry_run_impl(&manager, &body.name) {
-        Ok(output) => HttpResponse::Ok().json(output), 
-        Err(e) => HttpResponse::InternalServerError().json(ErrorResponse { error: e }),
+        Ok(output) => {
+            log::debug!("Remove dry run success for {}", body.name);
+            HttpResponse::Ok().json(output)
+        }, 
+        Err(e) => {
+            log::error!("Remove dry run failed: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse { error: e })
+        },
     }
 }
 
 pub async fn remove_package(body: web::Json<PackageAction>) -> impl Responder {
+    log::info!("Request: remove_package {}", body.name);
     let manager = detect_manager();
     match remove_package_impl(&manager, &body.name) {
-        Ok(msg) => HttpResponse::Ok().json(msg),
-        Err(e) => HttpResponse::InternalServerError().json(ErrorResponse { error: e }),
+        Ok(msg) => {
+            log::info!("Remove success: {}", msg);
+            HttpResponse::Ok().json(msg)
+        },
+        Err(e) => {
+            log::error!("Remove package failed: {}", e);
+            HttpResponse::InternalServerError().json(ErrorResponse { error: e })
+        },
     }
 }

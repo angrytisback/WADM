@@ -1,5 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useToast } from '../context/ToastContext';
+import { useSystem } from '../context/SystemContext';
+import { useModal } from '../context/ModalContext';
+
 
 interface FirewallStatus {
     active: boolean;
@@ -8,11 +11,16 @@ interface FirewallStatus {
 }
 
 function Firewall() {
+    const { confirm } = useModal();
     const [status, setStatus] = useState<FirewallStatus | null>(null);
     const [loading, setLoading] = useState(false);
     const [newRule, setNewRule] = useState('');
+    const [processingRule, setProcessingRule] = useState<string | 'adding' | null>(null);
     const [showReboot, setShowReboot] = useState(false);
     const { addToast } = useToast();
+    const { systemInfo } = useSystem();
+    const canManage = systemInfo?.is_root || systemInfo?.has_sudo;
+    const privilegeHint = !canManage ? "Root or Sudo privileges required for this action" : "";
 
     const fetchStatus = useCallback(() => {
         setLoading(true);
@@ -55,8 +63,13 @@ function Firewall() {
         if (!status) return;
         const action = status.active ? 'disable' : 'enable';
 
-        if (action === 'enable' && !confirm("Are you sure you want to enable the firewall? Ensure you have SSH allowed if remote.")) {
-            return;
+        if (action === 'enable') {
+            const ok = await confirm({
+                title: 'Enable Firewall',
+                message: 'Are you sure you want to enable the firewall? Ensure you have SSH allowed if remote.',
+                type: 'warning'
+            });
+            if (!ok) return;
         }
 
         try {
@@ -91,6 +104,7 @@ function Firewall() {
         e.preventDefault();
         if (!newRule.trim()) return;
 
+        setProcessingRule('adding');
         try {
             const res = await fetch('/api/firewall/rules', {
                 method: 'POST',
@@ -104,20 +118,25 @@ function Firewall() {
             setNewRule('');
         } catch {
             addToast("Failed to add rule", "error");
+        } finally {
+            setProcessingRule(null);
         }
     };
 
     const deleteRule = async (rule: string) => {
-        if (!confirm(`Delete rule: ${rule}?`)) return;
+        const ok = await confirm({
+            title: 'Delete Rule',
+            message: `Delete rule: ${rule}?`,
+            type: 'danger'
+        });
+        if (!ok) return;
 
-        
-        
-
+        setProcessingRule(rule);
         try {
             const res = await fetch('/api/firewall/rules', {
                 method: 'DELETE',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ rule: rule }) 
+                body: JSON.stringify({ rule: rule })
             });
             if (!res.ok) throw new Error('Failed to delete rule');
 
@@ -125,6 +144,8 @@ function Firewall() {
             await fetchStatus();
         } catch {
             addToast("Failed to delete rule", "error");
+        } finally {
+            setProcessingRule(null);
         }
     };
 
@@ -140,8 +161,11 @@ function Firewall() {
                     <button
                         className="btn-primary"
                         onClick={installFirewall}
-                        disabled={loading}
+                        disabled={loading || !canManage}
+                        title={privilegeHint}
+                        style={{ display: 'flex', alignItems: 'center', gap: '0.8rem', opacity: !canManage ? 0.5 : 1 }}
                     >
+                        {loading && <span className="spinner"></span>}
                         {loading ? 'Installing...' : 'Install Firewall (UFW)'}
                     </button>
                 </div>
@@ -173,9 +197,12 @@ function Firewall() {
                 <button
                     className={`btn ${status?.active ? 'btn-danger' : 'btn-primary'}`}
                     onClick={toggleFirewall}
-                    disabled={loading || !status}
+                    disabled={loading || !status || !canManage}
+                    title={privilegeHint}
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.8rem', opacity: !canManage ? 0.5 : 1 }}
                 >
-                    {status?.active ? 'Disable Firewall' : 'Enable Firewall'}
+                    {loading && <span className="spinner"></span>}
+                    {loading ? (status?.active ? 'Disabling...' : 'Enabling...') : (status?.active ? 'Disable Firewall' : 'Enable Firewall')}
                 </button>
             </div>
 
@@ -191,7 +218,10 @@ function Firewall() {
                         onChange={e => setNewRule(e.target.value)}
                         style={{ flex: 1 }}
                     />
-                    <button type="submit" className="btn btn-primary" disabled={loading}>Add Rule</button>
+                    <button type="submit" className="btn btn-primary" disabled={loading || processingRule === 'adding' || !canManage} title={privilegeHint} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: !canManage ? 0.5 : 1 }}>
+                        {processingRule === 'adding' && <span className="spinner" style={{ width: '0.8rem', height: '0.8rem' }}></span>}
+                        {processingRule === 'adding' ? 'Adding...' : 'Add Rule'}
+                    </button>
                 </form>
 
                 <div className="rules-list">
@@ -211,9 +241,11 @@ function Firewall() {
                                             <button
                                                 onClick={() => deleteRule(rule)}
                                                 className="btn-text item-action danger"
-                                                title="Delete Rule"
+                                                title={privilegeHint || "Delete Rule"}
+                                                disabled={!!processingRule || !canManage}
+                                                style={{ opacity: !canManage ? 0.5 : 1 }}
                                             >
-                                                🗑️
+                                                {processingRule === rule ? <span className="spinner" style={{ width: '0.8rem', height: '0.8rem' }}></span> : '🗑️'}
                                             </button>
                                         </td>
                                     </tr>

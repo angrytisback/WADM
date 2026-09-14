@@ -1,114 +1,50 @@
-import { useEffect, useRef, useState } from 'react';
-import { Terminal as XTerm } from '@xterm/xterm';
-import { FitAddon } from '@xterm/addon-fit';
+import { useEffect, useRef } from 'react';
+import { useTerminal } from '../context/TerminalContext';
 import '@xterm/xterm/css/xterm.css';
 
-export default function Terminal() {
+export default function Terminal({ visible }: { visible: boolean }) {
     const terminalRef = useRef<HTMLDivElement>(null);
-    const wsRef = useRef<WebSocket | null>(null);
-    const xtermRef = useRef({ term: null as XTerm | null, fit: null as FitAddon | null });
-    const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'forbidden'>('connecting');
+    const { xterm, fitAddon, status, connect } = useTerminal();
 
+    // Handle visibility changes and DOM attachment
     useEffect(() => {
+        if (!xterm || !terminalRef.current) return;
 
-        const term = new XTerm({
-            cursorBlink: true,
-            theme: {
-                background: '#0f172a',
-                foreground: '#f8fafc',
-            },
-            fontFamily: '"JetBrains Mono", monospace',
-            fontSize: 14,
-        });
-        const fitAddon = new FitAddon();
-        term.loadAddon(fitAddon);
+        if (visible) {
+            // Re-open/Re-attach to the current DOM element whenever it becomes visible
+            // This is the most reliable way to fix the "black screen" in dynamic layouts
+            xterm.open(terminalRef.current);
+            
+            // Reconnect if completely stopped and not forbidden
+            if (status === 'disconnected') {
+                connect();
+            }
 
-        if (terminalRef.current) {
-            term.open(terminalRef.current);
-            fitAddon.fit();
+            // Small delay to ensure the container is visible and has dimensions
+            const timer = setTimeout(() => {
+                if (fitAddon) {
+                    fitAddon.fit();
+                }
+                xterm.refresh(0, xterm.rows - 1);
+                xterm.scrollToBottom();
+                xterm.focus();
+            }, 150);
+
+            return () => clearTimeout(timer);
         }
+    }, [visible, xterm, fitAddon, status, connect]);
 
-        xtermRef.current = { term, fit: fitAddon };
-
-
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const token = localStorage.getItem('wadm_token') || '';
-        const wsUrl = `${protocol}//${window.location.host}/api/terminal/ws?token=${token}`;
-        const ws = new WebSocket(wsUrl);
-        wsRef.current = ws;
-
-        ws.onopen = () => {
-            setStatus('connected');
-            term.writeln('\x1b[32mConnected to WADM Terminal\x1b[0m');
-            term.focus();
-
-
-            setTimeout(() => {
-                if (xtermRef.current.fit) {
-                    xtermRef.current.fit.fit();
-                    const dims = xtermRef.current.term?.rows && xtermRef.current.term?.cols
-                        ? { cols: xtermRef.current.term.cols, rows: xtermRef.current.term.rows }
-                        : null;
-                    if (dims && ws.readyState === WebSocket.OPEN) {
-                        ws.send(`RESIZE:${dims.cols}x${dims.rows}`);
-                    }
-                }
-            }, 100);
-        };
-
-        ws.onmessage = (event) => {
-            if (typeof event.data === 'string') {
-                term.write(event.data);
-            } else {
-                const reader = new FileReader();
-                reader.onload = () => {
-                    term.write(new Uint8Array(reader.result as ArrayBuffer));
-                };
-                reader.readAsArrayBuffer(event.data);
-            }
-        };
-
-        ws.onclose = (event) => {
-            if (event.code === 1008 || event.reason.includes("Forbidden")) {
-                setStatus('forbidden');
-                term.writeln('\r\n\x1b[31mAccess Denied: Developer Mode is disabled.\x1b[0m');
-            } else {
-                setStatus('disconnected');
-                term.writeln('\r\n\x1b[33mConnection closed.\x1b[0m');
-            }
-        };
-
-        ws.onerror = () => {
-            setStatus('disconnected');
-        };
-
-
-        term.onData(data => {
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.send(data);
-            }
-        });
-
-
+    // Handle global resize events
+    useEffect(() => {
         const handleResize = () => {
-            if (xtermRef.current.fit) {
-                xtermRef.current.fit.fit();
-                const cols = xtermRef.current.term?.cols;
-                const rows = xtermRef.current.term?.rows;
-                if (cols && rows && ws.readyState === WebSocket.OPEN) {
-                    ws.send(`RESIZE:${cols}x${rows}`);
-                }
+            if (visible && fitAddon) {
+                fitAddon.fit();
             }
         };
 
         window.addEventListener('resize', handleResize);
-
-        return () => {
-            window.removeEventListener('resize', handleResize);
-            if (ws.readyState === WebSocket.OPEN) ws.close();
-            term.dispose();
-        };
-    }, []);
+        return () => window.removeEventListener('resize', handleResize);
+    }, [visible, fitAddon]);
 
     if (status === 'forbidden') {
         return (
@@ -117,7 +53,6 @@ export default function Terminal() {
                 <p style={{ marginTop: '1rem', color: 'var(--text-secondary)' }}>
                     Terminal access is disabled. You must enable <b>Developer Mode</b> in Settings to use this feature.
                 </p>
-                {/* We assume navigation is handled by parent, so no link here, or just text advice */}
                 <p style={{ marginTop: '0.5rem', fontSize: '0.9rem', color: 'var(--accent-color)' }}>
                     Navigate to Settings to enable it.
                 </p>
@@ -126,11 +61,21 @@ export default function Terminal() {
     }
 
     return (
-        <div style={{ height: 'calc(100vh - 100px)', padding: '1rem', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ height: 'calc(100vh - 120px)', padding: '1rem', display: 'flex', flexDirection: 'column' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-                <h2 style={{ fontSize: '1.5rem', fontWeight: 600, margin: 0 }}>Terminal</h2>
-                <div style={{ fontSize: '0.85rem', color: status === 'connected' ? '#10b981' : '#ef4444' }}>
-                    {status === 'connected' ? '● Connected' : '● Disconnected'}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                    <h2 style={{ fontSize: '1.5rem', fontWeight: 600, margin: 0 }}>Terminal</h2>
+                    {status === 'connecting' && <span style={{ fontSize: '0.8rem', color: 'var(--accent-color)', opacity: 0.8 }}>Initializing session...</span>}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem' }}>
+                    <div style={{ 
+                        width: '8px', height: '8px', borderRadius: '50%', 
+                        background: status === 'connected' ? '#10b981' : status === 'connecting' ? '#f59e0b' : '#ef4444',
+                        boxShadow: status === 'connected' ? '0 0 10px #10b981' : 'none'
+                    }}></div>
+                    <span style={{ color: status === 'connected' ? '#10b981' : 'var(--text-secondary)' }}>
+                        {status.charAt(0).toUpperCase() + status.slice(1)}
+                    </span>
                 </div>
             </div>
             <div
@@ -138,10 +83,11 @@ export default function Terminal() {
                 style={{
                     flex: 1,
                     background: '#0f172a',
-                    borderRadius: '8px',
+                    borderRadius: '12px',
                     padding: '1rem',
                     overflow: 'hidden',
-                    boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
+                    border: '1px solid var(--glass-border)',
+                    boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.3)'
                 }}
             />
         </div>

@@ -22,8 +22,10 @@ pub async fn list_services() -> impl Responder {
 
     
     
-    if let Ok(output) = Command::new("systemctl")
+    if let Ok(output) = Command::new("sudo")
         .args(&[
+            "-n",
+            "systemctl",
             "list-units",
             "--type=service",
             "--all",
@@ -65,8 +67,10 @@ pub async fn list_services() -> impl Responder {
 
     
     
-    if let Ok(output) = Command::new("systemctl")
+    if let Ok(output) = Command::new("sudo")
         .args(&[
+            "-n",
+            "systemctl",
             "list-unit-files",
             "--type=service",
             "--no-pager",
@@ -106,6 +110,10 @@ pub async fn list_services() -> impl Responder {
     HttpResponse::Ok().json(services)
 }
 
+fn is_valid_service_name(name: &str) -> bool {
+    !name.is_empty() && !name.starts_with('-') && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '@')
+}
+
 pub async fn control_service(
     path: web::Path<String>,
     body: web::Json<ServiceControl>,
@@ -113,15 +121,18 @@ pub async fn control_service(
     let service_name = path.into_inner();
     let action = &body.action;
 
-    if !["start", "stop", "restart", "enable"].contains(&action.as_str()) {
+    if !is_valid_service_name(&service_name) {
+        return HttpResponse::BadRequest().json("Invalid service name");
+    }
+
+    if !["start", "stop", "restart", "enable", "disable"].contains(&action.as_str()) {
         return HttpResponse::BadRequest().json("Invalid action");
     }
 
     
     
-    let output = Command::new("systemctl")
-        .arg(action)
-        .arg(&service_name)
+    let output = Command::new("sudo")
+        .args(&["-n", "systemctl", action, &service_name])
         .output();
 
     match output {
@@ -137,13 +148,13 @@ pub async fn control_service(
 pub async fn get_service_logs(path: web::Path<String>) -> impl Responder {
     let service_name = path.into_inner();
 
+    if !is_valid_service_name(&service_name) {
+        return HttpResponse::BadRequest().json("Invalid service name");
+    }
+
     
-    let output = Command::new("journalctl")
-        .arg("-u")
-        .arg(&service_name)
-        .arg("-n")
-        .arg("100")
-        .arg("--no-pager")
+    let output = Command::new("sudo")
+        .args(&["-n", "journalctl", "-u", &service_name, "-n", "100", "--no-pager"])
         .output();
 
     match output {

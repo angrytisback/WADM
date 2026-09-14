@@ -29,7 +29,7 @@ pub async fn ws_terminal(
     }
 
     let validation = Validation::new(Algorithm::HS256);
-    let _claims = match decode::<Claims>(token, &DecodingKey::from_secret(JWT_SECRET), &validation)
+    let _claims = match decode::<Claims>(token, &DecodingKey::from_secret(JWT_SECRET.as_slice()), &validation)
     {
         Ok(c) => c,
         Err(_) => return Ok(HttpResponse::Unauthorized().body("Invalid token")),

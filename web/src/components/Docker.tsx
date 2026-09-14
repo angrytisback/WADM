@@ -1,5 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useToast } from '../context/ToastContext';
+import { useSystem } from '../context/SystemContext';
+import { useModal } from '../context/ModalContext';
+
 
 interface Container {
     id: string;
@@ -16,12 +19,17 @@ interface DockerStatus {
 }
 
 export default function Docker() {
+    const { confirm } = useModal();
     const [containers, setContainers] = useState<Container[]>([]);
     const [statsMap, setStatsMap] = useState<Record<string, { cpu: number, memory: number }>>({});
     const [status, setStatus] = useState<DockerStatus | null>(null);
     const [loading, setLoading] = useState(true);
-    const [actionLoading, setActionLoading] = useState<string | null>(null);
+    // Modified to track { id: 'container_id', action: 'restart' } or 'service'
+    const [actionState, setActionState] = useState<{ id: string, action: string } | string | null>(null);
     const { addToast } = useToast();
+    const { systemInfo } = useSystem();
+    const canManage = systemInfo?.is_root || systemInfo?.has_sudo;
+    const privilegeHint = !canManage ? "Root or Sudo privileges required for this action" : "";
 
     const fetchContainers = useCallback(async () => {
         try {
@@ -59,7 +67,7 @@ export default function Docker() {
         checkStatus();
     }, [checkStatus]);
 
-    
+
     useEffect(() => {
         let interval: number;
         if (containers.length > 0) {
@@ -67,7 +75,7 @@ export default function Docker() {
                 const runningContainers = containers.filter(c => c.state === 'running');
                 if (runningContainers.length === 0) return;
 
-                
+
                 const newStats: Record<string, { cpu: number, memory: number }> = {};
 
                 await Promise.all(runningContainers.map(async (c) => {
@@ -81,7 +89,7 @@ export default function Docker() {
                             };
                         }
                     } catch {
-                        
+
                     }
                 }));
 
@@ -89,13 +97,13 @@ export default function Docker() {
             };
 
             fetchStats();
-            interval = setInterval(fetchStats, 5000); 
+            interval = setInterval(fetchStats, 5000);
         }
         return () => clearInterval(interval);
     }, [containers]);
 
     const startService = async () => {
-        setActionLoading('service');
+        setActionState('service');
         try {
             const res = await fetch('/api/docker/start', { method: 'POST' });
             if (res.ok) {
@@ -107,12 +115,34 @@ export default function Docker() {
         } catch {
             addToast("Failed to fetch Docker info", "error");
         } finally {
-            setActionLoading(null);
+            setActionState(null);
+        }
+    };
+
+    const installDocker = async () => {
+        setActionState('installing');
+        try {
+            const res = await fetch('/api/dependencies/install', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: 'Docker' }),
+            });
+            if (res.ok) {
+                addToast("Docker installation started", "success");
+                setTimeout(checkStatus, 10000);
+            } else {
+                const err = await res.json();
+                addToast(`Installation failed: ${err}`, "error");
+            }
+        } catch {
+            addToast("Failed to start Docker installation", "error");
+        } finally {
+            setActionState(null);
         }
     };
 
     const handleAction = async (id: string, action: string) => {
-        setActionLoading(id);
+        setActionState({ id, action });
         try {
             const res = await fetch(`/api/docker/${id}`, {
                 method: 'POST',
@@ -120,7 +150,8 @@ export default function Docker() {
                 body: JSON.stringify({ action }),
             });
             if (res.ok) {
-                addToast(`Container ${action}ed`, "success");
+                const actionText = action === 'remove' ? 'removed' : `${action}ed`;
+                addToast(`Container ${actionText}`, "success");
                 fetchContainers();
             } else {
                 const err = await res.json();
@@ -129,7 +160,7 @@ export default function Docker() {
         } catch {
             addToast("Operation failed", "error");
         } finally {
-            setActionLoading(null);
+            setActionState(null);
         }
     };
 
@@ -145,13 +176,22 @@ export default function Docker() {
 
     if (!status?.installed) {
         return (
-            <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center' }}>
+            <div className="glass-panel fade-in" style={{ padding: '3rem', textAlign: 'center' }}>
                 <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🐳</div>
-                <h3>Docker Not Found</h3>
-                <p style={{ color: 'var(--text-secondary)' }}>
-                    Docker does not appear to be installed on this system.
-                    Please install Docker to use this feature.
+                <h3 style={{ marginBottom: '1rem' }}>Docker Not Found</h3>
+                <p style={{ color: 'var(--text-secondary)', marginBottom: '2rem', maxWidth: '400px', marginInline: 'auto' }}>
+                    Docker is not installed on this system. You can install it automatically using the button below.
                 </p>
+                <button
+                    className="btn-primary"
+                    onClick={installDocker}
+                    disabled={actionState === 'installing' || !canManage}
+                    title={privilegeHint}
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.8rem', marginInline: 'auto', opacity: !canManage ? 0.5 : 1 }}
+                >
+                    {actionState === 'installing' && <span className="spinner"></span>}
+                    {actionState === 'installing' ? 'Installing Docker...' : 'Install Docker Automatically'}
+                </button>
             </div>
         );
     }
@@ -167,9 +207,12 @@ export default function Docker() {
                 <button
                     className="btn-primary"
                     onClick={startService}
-                    disabled={actionLoading === 'service'}
+                    disabled={actionState === 'service' || !canManage}
+                    title={privilegeHint}
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.8rem', marginInline: 'auto', opacity: !canManage ? 0.5 : 1 }}
                 >
-                    {actionLoading === 'service' ? 'Starting...' : 'Start Docker Service'}
+                    {actionState === 'service' && <span className="spinner"></span>}
+                    {actionState === 'service' ? 'Starting...' : 'Start Docker Service'}
                 </button>
             </div>
         );
@@ -221,32 +264,62 @@ export default function Docker() {
                                         ) : '-'}
                                     </td>
                                     <td style={{ padding: '1rem', display: 'flex', gap: '0.5rem' }}>
-
                                         {c.state === 'running' ? (
                                             <>
                                                 <button
                                                     className="btn-sm"
                                                     onClick={() => handleAction(c.id, 'restart')}
-                                                    disabled={actionLoading === c.id}
+                                                    disabled={!!actionState || !canManage}
+                                                    title={privilegeHint}
+                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: !canManage ? 0.5 : 1 }}
                                                 >
+                                                    {typeof actionState === 'object' && actionState?.id === c.id && actionState.action === 'restart' && <span className="spinner" style={{ width: '0.8rem', height: '0.8rem' }}></span>}
                                                     Restart
                                                 </button>
                                                 <button
                                                     className="btn-sm danger"
                                                     onClick={() => handleAction(c.id, 'stop')}
-                                                    disabled={actionLoading === c.id}
+                                                    disabled={!!actionState || !canManage}
+                                                    title={privilegeHint}
+                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: !canManage ? 0.5 : 1 }}
                                                 >
+                                                    {typeof actionState === 'object' && actionState?.id === c.id && actionState.action === 'stop' && <span className="spinner" style={{ width: '0.8rem', height: '0.8rem' }}></span>}
                                                     Stop
                                                 </button>
                                             </>
                                         ) : (
-                                            <button
-                                                className="btn-sm success"
-                                                onClick={() => handleAction(c.id, 'start')}
-                                                disabled={actionLoading === c.id}
-                                            >
-                                                Start
-                                            </button>
+                                            <>
+                                                <button
+                                                    className="btn-sm success"
+                                                    onClick={() => handleAction(c.id, 'start')}
+                                                    disabled={!!actionState || !canManage}
+                                                    title={privilegeHint}
+                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: !canManage ? 0.5 : 1 }}
+                                                >
+                                                    {typeof actionState === 'object' && actionState?.id === c.id && actionState.action === 'start' && <span className="spinner" style={{ width: '0.8rem', height: '0.8rem' }}></span>}
+                                                    Start
+                                                </button>
+                                                <button
+                                                    className="btn-sm danger"
+                                                    onClick={async () => {
+                                                        const ok = await confirm({
+                                                            title: 'Delete Container',
+                                                            message: `Are you sure you want to delete container ${c.name}?`,
+                                                            type: 'danger',
+                                                            confirmText: 'Delete'
+                                                        });
+                                                        if (ok) {
+                                                            handleAction(c.id, 'remove');
+                                                        }
+                                                    }}
+                                                    disabled={!!actionState || !canManage}
+                                                    title={privilegeHint}
+                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: !canManage ? 0.5 : 1 }}
+                                                >
+                                                    {typeof actionState === 'object' && actionState?.id === c.id && actionState.action === 'remove' && <span className="spinner" style={{ width: '0.8rem', height: '0.8rem' }}></span>}
+                                                    Delete
+                                                </button>
+                                            </>
                                         )}
                                     </td>
                                 </tr>

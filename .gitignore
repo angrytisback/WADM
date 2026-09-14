@@ -1,18 +1,48 @@
-target/
+# ------------------------------------------------------------------------------
+# Rust / Cargo
+# ------------------------------------------------------------------------------
+/target/
 **/*.rs.bk
-.cargo
+
+# ------------------------------------------------------------------------------
+# Node.js / React (Frontend)
+# ------------------------------------------------------------------------------
+web/node_modules/
+web/dist/
+web/build/
+web/.npm/
+web/.eslintcache
+web/npm-debug.log*
+web/yarn-debug.log*
+web/yarn-error.log*
+
+# ------------------------------------------------------------------------------
+# Environment Variables & Secrets
+# ------------------------------------------------------------------------------
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.wadm_jwt_secret
+
+# ------------------------------------------------------------------------------
+# Build Artifacts & Outputs
+# ------------------------------------------------------------------------------
+/build/linux-*/
+/build/windows-*/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# ------------------------------------------------------------------------------
+# IDEs, Editors & OS Files
+# ------------------------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
 .DS_Store
 Thumbs.db
-.vscode/
-.idea/
-.iml
-*.log
-release/
-wadm-auth.json
-wadm-config.json
-web/dist/
-web/node_modules/
-web/README.md
-web/.gitignore
-releases
-compile_all.sh

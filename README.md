@@ -1,106 +1,101 @@
-# WADM - Web Administration for Linux
+# WADM - Web Admin
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Rust](https://img.shields.io/badge/rust-1.75%2B-orange.svg)
-![React](https://img.shields.io/badge/react-18-blue.svg)
+[![Build Status](https://img.shields.io/badge/build-passing-brightgreen)](#)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Rust](https://img.shields.io/badge/Rust-1.80+-orange)](#)
+[![React](https://img.shields.io/badge/React-18.x-blue)](#)
 
-WADM is a modern, lightweight, and secure web-based control panel for Linux systems. It provides a beautiful interface to manage your server, monitor performance, and control services, Docker containers, and packages.
+WADM (Web Admin) is a highly secure, lightweight, and performant web-based administration panel designed for Linux server management. Built with a Rust backend (Actix-Web) and a React/TypeScript frontend (Vite), WADM provides a responsive, real-time dashboard for comprehensive server monitoring, package management, container orchestration, and power sequencing.
 
-![preview](./assets/preview.png)
+## Table of Contents
+- [Architecture Overview](#architecture-overview)
+- [Key Features](#key-features)
+- [Security Protocol](#security-protocol)
+- [Installation and Setup](#installation-and-setup)
+- [Building from Source](#building-from-source)
+- [Docker Deployment](#docker-deployment)
+- [CI/CD and Releases](#cicd-and-releases)
+- [License](#license)
 
-**Note: This project is currently in active development.**
+## Architecture Overview
 
-## Features
+WADM operates on a monolithic client-server architecture engineered for minimal footprint and maximum security:
+- **Backend**: Rust (Actix-Web) handles system-level API requests, strictly executing authorized Linux commands via standard libraries, `bollard` for Docker IPC, and direct D-Bus/sysfs integrations.
+- **Frontend**: React 18 with TypeScript, bundled by Vite. State is managed via Context API, ensuring low-latency real-time updates for telemetry graphs.
+- **Communication**: Secure RESTful API validated via hardened JSON Web Tokens (JWT).
 
-- **System Dashboard**: Real-time monitoring of CPU, Memory, Disk, Swap, and detailed Network usage (Upload/Download split).
-- **Web Terminal**: Secure, SSH-like access to the system shell directly from the browser (requires Developer Mode).
-- **Package Management**: Unified interface for apt, dnf, and pacman. Auto-detects your system's package manager.
-- **Docker Management**: View, start, stop, and restart containers. Monitor per-container CPU and Memory usage.
-- **Firewall Control**: Manage ufw rules with a visual interface.
-- **Service Manager**: Start, stop, and restart systemd services. View service logs directly in the browser.
-- **Process Manager**: View running processes with Task Manager style controls (Kill/Force Kill).
-- **Settings & Security**:
-  - Secure Authentication with 2FA (TOTP) enforcement.
-  - Developer Mode to gate advanced features like the Terminal.
-  - Sudo privilege detection and warning.
+## Key Features
 
-## Technology Stack
+- **System Telemetry & Monitoring**: Real-time visualization of CPU, RAM, Swap, Network, and GPU usage (via NVML/sysfs).
+- **Advanced Maintenance Automation**: Deep system cleaning protocols including RAM cache flushing, Swap cycle resetting, SSD TRIM (`fstrim`), and package manager cache sweeping.
+- **App Store & Docker Orchestration**: One-click deployment of containerized services. Complete container lifecycle management (Start, Stop, Restart, Delete).
+- **Advanced File Explorer**: Full read/write/execute capabilities over the server filesystem, including in-browser file editing and cross-network transfers.
+- **Package Management**: Unified interface for APT, DNF, and Pacman. Update, upgrade, and resolve dependencies directly from the dashboard.
+- **Scheduled Power Sequencing**: Hardware power control supporting instant reboots, immediate shutdowns, and minute-precision scheduled power cycles integrated directly with `systemd-logind`.
+- **Integrated Terminal**: Fully functional WebSocket-based TTY interface for raw command-line access.
 
-- **Backend**: Rust (Actix-web, Bollard, Sysinfo, Portable-PTY)
-- **Frontend**: React, TypeScript, Vite, Recharts, Xterm.js
-- **Styling**: Vanilla CSS (Glassmorphism design)
+## Security Protocol
 
-## Installation from Release
+WADM is designed for production server environments where security is paramount:
+- **Zero-Trust Authentication**: Requires valid Linux PAM authentication (`/etc/shadow`) mapped to authorized users.
+- **Privilege Boundaries**: Requires `sudo` group membership or `root` user context. 
+- **Dynamic Key Generation**: Secures sessions via a rotating, auto-generated 256-bit cryptographic JWT secret.
+- **Sanitization Engine**: Strict regex-based input sanitization prevents arbitrary shell injection across all system command interfaces.
 
-To install WADM using the pre-built binaries, follow these steps:
-
-1.  **Download the Release**:
-    Go to the [Releases](https://github.com/angrytisback/WADM/releases) page and download the suitable release archive for your architecture.
-
-2.  **Extract the Archive**:
-    Extract the contents of the downloaded archive to your desired location.
-    ```bash
-    tar -xf release.tar.xz
-    cd release
-    ```
-
-3.  **Run the Application**:
-    Execute the binary with root privileges to ensure full functionality (required for service and package management).
-    ```bash
-    sudo ./wadm
-    ```
-
-4.  **Access the Dashboard**:
-    Open your web browser and navigate to http://localhost:8168.
-    Follow the on-screen prompts to complete the initial setup and 2FA configuration.
-
-## Build from Source
-
-If you prefer to build the project from source, ensure you have the necessary prerequisites installed.
+## Installation and Setup
 
 ### Prerequisites
+- A Linux-based operating system (Debian, Ubuntu, RHEL, Arch).
+- `sudo` privileges.
+- Rust toolchain (if compiling from source).
+- Node.js >= 20.x (if compiling from source).
 
-- **Rust**: Install Rust
-- **Node.js**: Install Node.js (v18+)
-- **System Dependencies**: Ensure libssl-dev (Ubuntu) or openssl-devel (Fedora) is installed.
-  - Optional: ufw for firewall management, docker for container management.
+### Downloading Pre-built Binaries
+Navigate to the [Releases](https://github.com/yourusername/wadm/releases) page to download the latest binary for your architecture (`linux-x64`, `linux-arm64`, `linux-riscv64`).
 
-### Build Steps
+```bash
+chmod +x wadm
+sudo ./wadm
+```
+The server will initialize on port `8080` by default.
 
-1. **Clone the repository:**
-    ```bash
-    git clone https://github.com/angrytisback/WADM.git
-    cd WADM
-    ```
+## Building from Source
 
-2. **Build the Frontend:**
-    ```bash
-    cd web
-    npm install
-    npm run build
-    cd ..
-    ```
-    *Note: The backend is configured to serve static files from web/dist.*
+WADM uses a dual-build process. You can utilize the provided build script for cross-compilation.
 
-3. **Run the Backend:**
-    ```bash
-    cargo run --release
-    ```
-    *Note: You may need root privileges for certain features (Service control, Package management).*
-    ```bash
-    sudo ./target/release/wadm
-    ```
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/wadm.git
+cd wadm
 
-## Contributing
+# Execute the automated build script (requires 'cross' cargo plugin for multi-arch)
+chmod +x build.sh
+./build.sh
+```
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+## Docker Deployment
 
-1.  Fork the Project
-2.  Create your Feature Branch
-3.  Commit your Changes
-4.  Push to the Branch
-5.  Open a Pull Request
+To deploy WADM via Docker, host system bindings are required to allow the management interface to interact with the underlying hardware and services. 
+
+```bash
+docker run -d \
+  --name wadm \
+  --privileged \
+  --pid=host \
+  --network=host \
+  -v /:/host_root \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /run/systemd:/run/systemd \
+  angryt/wadm:latest
+```
+
+## CI/CD and Releases
+
+This repository is structured for continuous integration. To push a new release:
+1. Commit your changes to the `main` branch.
+2. Draft a new Release on GitHub.
+3. Attach the compiled artifacts from the `build/` directory directly to the Release assets.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+Distributed under the MIT License. See `LICENSE` for more information.

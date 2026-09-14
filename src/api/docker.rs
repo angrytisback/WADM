@@ -1,8 +1,8 @@
-#![allow(deprecated)]
 use actix_web::{web, HttpResponse, Responder};
 use bollard::Docker;
 use futures_util::stream::TryStreamExt;
 use serde::{Deserialize, Serialize};
+use log::info;
 
 use std::process::Command;
 
@@ -165,6 +165,7 @@ pub async fn control_container(
         }
     };
 
+    info!("Initiating Docker action: {} on container {}", action, container_id);
     let result = match action.as_str() {
         "start" => {
             docker
@@ -190,12 +191,26 @@ pub async fn control_container(
                 )
                 .await
         }
+        "remove" => {
+            docker
+                .remove_container(
+                    &container_id,
+                    None::<bollard::container::RemoveContainerOptions>,
+                )
+                .await
+        }
         _ => return HttpResponse::BadRequest().json("Invalid action"),
     };
 
     match result {
-        Ok(_) => HttpResponse::Ok().json(format!("Container {} {}ed", container_id, action)),
-        Err(e) => HttpResponse::InternalServerError().json(format!("Docker action failed: {}", e)),
+        Ok(_) => {
+            info!("Successfully {}ed container {}", action, container_id);
+            HttpResponse::Ok().json(format!("Container {} {}ed", container_id, action))
+        },
+        Err(e) => {
+            info!("Docker action {} failed for {}: {}", action, container_id, e);
+            HttpResponse::InternalServerError().json(format!("Docker action failed: {}", e))
+        },
     }
 }
 
@@ -209,9 +224,8 @@ pub async fn get_status() -> impl Responder {
     let mut running = false;
     if installed {
         
-        if let Ok(output) = Command::new("systemctl")
-            .arg("is-active")
-            .arg("docker")
+        if let Ok(output) = Command::new("sudo")
+            .args(&["-n", "systemctl", "is-active", "docker"])
             .output()
         {
             let s = String::from_utf8_lossy(&output.stdout);
@@ -237,9 +251,7 @@ pub async fn get_status() -> impl Responder {
 
 pub async fn start_service() -> impl Responder {
     let status = Command::new("sudo") 
-        .arg("systemctl")
-        .arg("start")
-        .arg("docker")
+        .args(&["-n", "systemctl", "start", "docker"])
         .status();
 
     match status {

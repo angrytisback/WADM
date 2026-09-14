@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useToast } from '../context/ToastContext';
+import { useSystem } from '../context/SystemContext';
 
 interface Package {
     name: string;
@@ -16,14 +17,16 @@ export default function Packages() {
     const [packages, setPackages] = useState<Package[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const { systemInfo } = useSystem();
+    const canManage = systemInfo?.is_root || systemInfo?.has_sudo;
+    const privilegeHint = !canManage ? "Root or Sudo privileges required for this action" : "";
 
-    
-    const [isActionLoading, setIsActionLoading] = useState(false);
+    // Replaced single boolean with specific action tracking
+    const [actionState, setActionState] = useState<{ type: 'update' | 'install' | 'remove', target?: string } | null>(null);
 
-    
     const [installPackageName, setInstallPackageName] = useState('');
 
-    
+
     const [pendingRemove, setPendingRemove] = useState<string | null>(null);
     const [dryRunOutput, setDryRunOutput] = useState<string | null>(null);
 
@@ -44,7 +47,7 @@ export default function Packages() {
                 if (Array.isArray(data)) {
                     setPackages(data);
                 } else {
-                    setPackages([]); 
+                    setPackages([]);
                     console.error('Unexpected data:', data);
                 }
             } else {
@@ -63,7 +66,7 @@ export default function Packages() {
     }, [fetchPackages]);
 
     const handleUpdate = async (name: string) => {
-        setIsActionLoading(true);
+        setActionState({ type: 'update', target: name });
         try {
             await fetch('/api/packages/upgrade', {
                 method: 'POST',
@@ -75,13 +78,13 @@ export default function Packages() {
         } catch {
             addToast(`Failed to update ${name}`, 'error');
         } finally {
-            setIsActionLoading(false);
+            setActionState(null);
         }
     };
 
     const handleInstall = async () => {
         if (!installPackageName) return;
-        setIsActionLoading(true);
+        setActionState({ type: 'install' });
         try {
             await fetch('/api/packages/install', {
                 method: 'POST',
@@ -94,21 +97,21 @@ export default function Packages() {
         } catch {
             addToast(`Failed to install`, 'error');
         } finally {
-            setIsActionLoading(false);
+            setActionState(null);
         }
     };
 
     const initiateRemove = async (name: string) => {
         setPendingRemove(name);
         setDryRunOutput(null);
-        
+
         try {
             const res = await fetch('/api/packages/remove-dry-run', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ name })
             });
-            const text = await res.json(); 
+            const text = await res.json();
             setDryRunOutput(text);
         } catch {
             setDryRunOutput('Could not determine dependencies. Be careful.');
@@ -117,7 +120,7 @@ export default function Packages() {
 
     const confirmRemove = async () => {
         if (!pendingRemove) return;
-        setIsActionLoading(true);
+        setActionState({ type: 'remove', target: pendingRemove });
         try {
             await fetch('/api/packages/remove', {
                 method: 'POST',
@@ -131,7 +134,7 @@ export default function Packages() {
         } finally {
             setPendingRemove(null);
             setDryRunOutput(null);
-            setIsActionLoading(false);
+            setActionState(null);
         }
     };
 
@@ -191,8 +194,9 @@ export default function Packages() {
                             onChange={(e) => setInstallPackageName(e.target.value)}
                             style={{ width: '150px', padding: '0.5rem' }}
                         />
-                        <button onClick={handleInstall} className="btn-primary" disabled={isActionLoading || !installPackageName}>
-                            Install
+                        <button onClick={handleInstall} className="btn-primary" disabled={!!actionState || !installPackageName || !canManage} title={privilegeHint} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: !canManage ? 0.5 : 1 }}>
+                            {actionState?.type === 'install' && <span className="spinner" style={{ width: '0.8rem', height: '0.8rem' }}></span>}
+                            {actionState?.type === 'install' ? 'Installing...' : 'Install'}
                         </button>
                     </div>
                     <input
@@ -233,15 +237,20 @@ export default function Packages() {
                                         <button
                                             className="btn-sm"
                                             onClick={() => handleUpdate(pkg.name)}
-                                            disabled={isActionLoading}
+                                            disabled={!!actionState || !canManage}
+                                            title={privilegeHint}
+                                            style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: !canManage ? 0.5 : 1 }}
                                         >
-                                            Update
+                                            {actionState?.type === 'update' && actionState.target === pkg.name && <span className="spinner" style={{ width: '0.8rem', height: '0.8rem' }}></span>}
+                                            {actionState?.type === 'update' && actionState.target === pkg.name ? 'Updating...' : 'Update'}
                                         </button>
                                     ) : (
                                         <button
                                             className="btn-sm danger"
                                             onClick={() => initiateRemove(pkg.name)}
-                                            disabled={isActionLoading}
+                                            disabled={!!actionState || !canManage}
+                                            title={privilegeHint}
+                                            style={{ opacity: !canManage ? 0.5 : 1 }}
                                         >
                                             Remove
                                         </button>
@@ -280,7 +289,10 @@ export default function Packages() {
 
                         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '1rem' }}>
                             <button className="btn-secondary" onClick={() => setPendingRemove(null)}>Cancel</button>
-                            <button className="btn-primary danger" onClick={confirmRemove}>Confirm Remove</button>
+                            <button className="btn-primary danger" onClick={confirmRemove} disabled={actionState?.type === 'remove'} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                {actionState?.type === 'remove' && <span className="spinner" style={{ width: '0.8rem', height: '0.8rem' }}></span>}
+                                {actionState?.type === 'remove' ? 'Removing...' : 'Confirm Remove'}
+                            </button>
                         </div>
                     </div>
                 </div>
