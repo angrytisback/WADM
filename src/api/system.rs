@@ -309,9 +309,7 @@ pub async fn handle_power_action(payload: web::Json<PowerAction>) -> impl Respon
             }
         }
         "cancel" => {
-            let output = Command::new("sudo")
-                .args(["-n", "shutdown", "-c"])
-                .output();
+            let output = Command::new("sudo").args(["-n", "shutdown", "-c"]).output();
             match output {
                 Ok(o) if o.status.success() => {
                     HttpResponse::Ok().json("Scheduled power sequence successfully cancelled.")

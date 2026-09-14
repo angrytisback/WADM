@@ -5,13 +5,11 @@ use std::sync::Mutex;
 
 const CONFIG_FILE: &str = "wadm-config.json";
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[derive(Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct AppConfig {
     #[serde(default)]
     pub developer_mode: bool,
 }
-
 
 pub fn load_config() -> AppConfig {
     match fs::read_to_string(CONFIG_FILE) {

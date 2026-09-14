@@ -56,7 +56,8 @@ pub async fn list_containers() -> impl Responder {
                     id: c.id.unwrap_or_default(),
                     name: c
                         .names
-                        .unwrap_or_default().first()
+                        .unwrap_or_default()
+                        .first()
                         .cloned()
                         .unwrap_or_default()
                         .trim_start_matches('/')

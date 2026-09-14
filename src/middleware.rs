@@ -96,12 +96,10 @@ where
                     Ok(res.map_into_left_body())
                 })
             }
-            Err(_) => {
-                Box::pin(async move {
-                    let res = HttpResponse::Unauthorized().body("Invalid token");
-                    Ok(ServiceResponse::new(req.into_parts().0, res).map_into_right_body())
-                })
-            }
+            Err(_) => Box::pin(async move {
+                let res = HttpResponse::Unauthorized().body("Invalid token");
+                Ok(ServiceResponse::new(req.into_parts().0, res).map_into_right_body())
+            }),
         }
     }
 }

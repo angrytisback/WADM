@@ -102,9 +102,7 @@ pub async fn set_status(body: web::Json<FirewallAction>) -> impl Responder {
             .arg("yes | sudo -n ufw enable")
             .status()
     } else {
-        Command::new("sudo")
-            .args(["-n", "ufw", "disable"])
-            .status()
+        Command::new("sudo").args(["-n", "ufw", "disable"]).status()
     };
 
     match status {

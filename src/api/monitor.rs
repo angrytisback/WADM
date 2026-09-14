@@ -181,7 +181,9 @@ fn fill_intel_stats(stats: &mut GpuStats, card_name: &str) {
                                 let busy = if let Some(b) = engine.get("busy") {
                                     if let Some(val) = b.as_f64() {
                                         Some(val)
-                                    } else { b.get("value").and_then(|v| v.as_f64()) }
+                                    } else {
+                                        b.get("value").and_then(|v| v.as_f64())
+                                    }
                                 } else {
                                     None
                                 };
@@ -254,9 +256,10 @@ fn fill_intel_stats(stats: &mut GpuStats, card_name: &str) {
             if let Ok(name) = std::fs::read_to_string(path.join("name")) {
                 let name = name.trim();
                 if (name == "i915" || name == "xe" || name.contains("intel_gpu"))
-                    && scan_hwmon_dir(&path, stats) {
-                        return;
-                    }
+                    && scan_hwmon_dir(&path, stats)
+                {
+                    return;
+                }
             }
         }
     }
