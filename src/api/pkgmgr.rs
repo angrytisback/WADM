@@ -58,7 +58,7 @@ pub fn detect_manager() -> ManagerType {
 
 fn list_packages_pacman() -> Result<Vec<Package>, String> {
     let output = Command::new("sudo")
-        .args(&["-n", "pacman", "-Qu"])
+        .args(["-n", "pacman", "-Qu"])
         .output()
         .map_err(|e| e.to_string())?;
 
@@ -75,7 +75,7 @@ fn list_packages_pacman() -> Result<Vec<Package>, String> {
         .filter(|l| !l.is_empty())
         .filter_map(|line| {
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 1 {
+            if !parts.is_empty() {
                 let name = parts[0].to_string();
                 let version = if parts.len() >= 4 {
                     parts[3].to_string()
@@ -97,7 +97,7 @@ fn list_packages_pacman() -> Result<Vec<Package>, String> {
 
 fn list_packages_apt() -> Result<Vec<Package>, String> {
     let output = Command::new("sudo")
-        .args(&["-n", "apt", "list", "--upgradable"])
+        .args(["-n", "apt", "list", "--upgradable"])
         .output()
         .map_err(|e| e.to_string())?;
 
@@ -130,7 +130,7 @@ fn list_packages_apt() -> Result<Vec<Package>, String> {
 
 fn list_packages_dnf() -> Result<Vec<Package>, String> {
     let output = Command::new("sudo")
-        .args(&["-n", "dnf", "check-update"])
+        .args(["-n", "dnf", "check-update"])
         .output()
         .map_err(|e| e.to_string())?;
 
@@ -188,7 +188,7 @@ fn upgrade_package_impl(manager: &ManagerType, name: &str) -> Result<String, Str
 
     info!("Attempting to update package: {} using {:?}", name, manager);
     let output = Command::new("sudo")
-        .args(&["-n", cmd])
+        .args(["-n", cmd])
         .args(args)
         .output()
         .map_err(|e| e.to_string())?;
@@ -217,7 +217,7 @@ fn install_package_impl(manager: &ManagerType, name: &str) -> Result<String, Str
         name, manager
     );
     let output = Command::new("sudo")
-        .args(&["-n", cmd])
+        .args(["-n", cmd])
         .args(args)
         .output()
         .map_err(|e| e.to_string())?;
@@ -302,7 +302,7 @@ pub async fn install_package(body: web::Json<PackageAction>) -> impl Responder {
 
 fn list_installed_packages_pacman() -> Result<Vec<Package>, String> {
     let output = Command::new("sudo")
-        .args(&["-n", "pacman", "-Q"])
+        .args(["-n", "pacman", "-Q"])
         .output()
         .map_err(|e| e.to_string())?;
 
@@ -361,7 +361,7 @@ fn list_installed_packages_apt() -> Result<Vec<Package>, String> {
 
 fn list_installed_packages_dnf() -> Result<Vec<Package>, String> {
     let output = Command::new("sudo")
-        .args(&["-n", "dnf", "list", "installed", "-q"])
+        .args(["-n", "dnf", "list", "installed", "-q"])
         .output()
         .map_err(|e| e.to_string())?;
 
@@ -400,12 +400,12 @@ fn update_all_packages_impl(manager: &ManagerType) -> Result<String, String> {
 
     if let ManagerType::Apt = manager {
         let _ = Command::new("sudo")
-            .args(&["-n", "apt-get", "update"])
+            .args(["-n", "apt-get", "update"])
             .output();
     }
 
     let output = Command::new("sudo")
-        .args(&["-n", cmd])
+        .args(["-n", cmd])
         .args(args)
         .output()
         .map_err(|e| e.to_string())?;
@@ -424,21 +424,21 @@ fn remove_package_dry_run_impl(manager: &ManagerType, name: &str) -> Result<Stri
     match manager {
         ManagerType::Pacman => {
             let output = Command::new("sudo")
-                .args(&["-n", "pacman", "-Rns", name, "-p"])
+                .args(["-n", "pacman", "-Rns", name, "-p"])
                 .output()
                 .map_err(|e| e.to_string())?;
             Ok(String::from_utf8_lossy(&output.stdout).to_string())
         }
         ManagerType::Apt => {
             let output = Command::new("sudo")
-                .args(&["-n", "apt-get", "remove", "-s", name])
+                .args(["-n", "apt-get", "remove", "-s", name])
                 .output()
                 .map_err(|e| e.to_string())?;
             Ok(String::from_utf8_lossy(&output.stdout).to_string())
         }
         ManagerType::Dnf => {
             let output = Command::new("sudo")
-                .args(&["-n", "dnf", "remove", name, "--assumeno"])
+                .args(["-n", "dnf", "remove", name, "--assumeno"])
                 .output()
                 .map_err(|e| e.to_string())?;
 
@@ -461,7 +461,7 @@ fn remove_package_impl(manager: &ManagerType, name: &str) -> Result<String, Stri
 
     info!("Attempting to remove package: {} using {:?}", name, manager);
     let output = Command::new("sudo")
-        .args(&["-n", cmd])
+        .args(["-n", cmd])
         .args(args)
         .output()
         .map_err(|e| e.to_string())?;

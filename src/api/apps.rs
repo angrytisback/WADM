@@ -142,12 +142,12 @@ pub async fn install_app(body: web::Json<AppInstallRequest>) -> impl Responder {
 
     actix_web::rt::spawn(async move {
         let _ = Command::new("sudo")
-            .args(&["-n", "docker-compose", "up", "-d"])
+            .args(["-n", "docker-compose", "up", "-d"])
             .current_dir(&app_dir)
             .output();
 
         let _ = Command::new("sudo")
-            .args(&["-n", "docker", "compose", "up", "-d"])
+            .args(["-n", "docker", "compose", "up", "-d"])
             .current_dir(&app_dir)
             .output();
     });

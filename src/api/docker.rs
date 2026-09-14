@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 use actix_web::{web, HttpResponse, Responder};
 use bollard::Docker;
 use futures_util::stream::TryStreamExt;
@@ -55,8 +56,7 @@ pub async fn list_containers() -> impl Responder {
                     id: c.id.unwrap_or_default(),
                     name: c
                         .names
-                        .unwrap_or_default()
-                        .get(0)
+                        .unwrap_or_default().first()
                         .cloned()
                         .unwrap_or_default()
                         .trim_start_matches('/')
@@ -221,7 +221,7 @@ pub async fn get_status() -> impl Responder {
     let mut running = false;
     if installed {
         if let Ok(output) = Command::new("sudo")
-            .args(&["-n", "systemctl", "is-active", "docker"])
+            .args(["-n", "systemctl", "is-active", "docker"])
             .output()
         {
             let s = String::from_utf8_lossy(&output.stdout);
@@ -247,7 +247,7 @@ pub async fn get_status() -> impl Responder {
 
 pub async fn start_service() -> impl Responder {
     let status = Command::new("sudo")
-        .args(&["-n", "systemctl", "start", "docker"])
+        .args(["-n", "systemctl", "start", "docker"])
         .status();
 
     match status {

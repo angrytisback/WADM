@@ -66,7 +66,7 @@ fn get_pci_gpus() -> Vec<String> {
 
 fn fill_nvidia_stats(stats: &mut GpuStats, pci_id: &str) {
     let output = Command::new("sudo")
-        .args(&[
+        .args([
             "-n",
             "nvidia-smi",
             "-i",
@@ -97,7 +97,7 @@ fn fill_nvidia_stats(stats: &mut GpuStats, pci_id: &str) {
     } else {
         // Fallback: try without -i if specific PCI ID fails
         if let Ok(o) = Command::new("sudo")
-            .args(&[
+            .args([
                 "-n",
                 "nvidia-smi",
                 "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu",
@@ -164,7 +164,7 @@ fn fill_intel_stats(stats: &mut GpuStats, card_name: &str) {
         .unwrap_or(false);
     if has_intel_top {
         let output = Command::new("sudo")
-            .args(&["-n", "intel_gpu_top", "-J", "-s", "200", "-n", "1"])
+            .args(["-n", "intel_gpu_top", "-J", "-s", "200", "-n", "1"])
             .output();
 
         if let Ok(o) = output {
@@ -181,13 +181,7 @@ fn fill_intel_stats(stats: &mut GpuStats, card_name: &str) {
                                 let busy = if let Some(b) = engine.get("busy") {
                                     if let Some(val) = b.as_f64() {
                                         Some(val)
-                                    } else if let Some(val) =
-                                        b.get("value").and_then(|v| v.as_f64())
-                                    {
-                                        Some(val)
-                                    } else {
-                                        None
-                                    }
+                                    } else { b.get("value").and_then(|v| v.as_f64()) }
                                 } else {
                                     None
                                 };
@@ -259,11 +253,10 @@ fn fill_intel_stats(stats: &mut GpuStats, card_name: &str) {
             let path = entry.path();
             if let Ok(name) = std::fs::read_to_string(path.join("name")) {
                 let name = name.trim();
-                if name == "i915" || name == "xe" || name.contains("intel_gpu") {
-                    if scan_hwmon_dir(&path, stats) {
+                if (name == "i915" || name == "xe" || name.contains("intel_gpu"))
+                    && scan_hwmon_dir(&path, stats) {
                         return;
                     }
-                }
             }
         }
     }
@@ -466,7 +459,7 @@ fn get_interface_speed(iface: &str) -> u64 {
 
 fn count_services(state: &str) -> u32 {
     let output = Command::new("sudo")
-        .args(&[
+        .args([
             "-n",
             "systemctl",
             "list-units",
@@ -487,7 +480,7 @@ fn count_services(state: &str) -> u32 {
 
 fn count_containers() -> u32 {
     let output = Command::new("sudo")
-        .args(&["-n", "docker", "ps", "-q"])
+        .args(["-n", "docker", "ps", "-q"])
         .output();
     match output {
         Ok(out) => {
@@ -634,7 +627,7 @@ pub async fn kill_process(body: web::Json<ProcessAction>) -> impl Responder {
         _ => 15,
     };
     let output = std::process::Command::new("sudo")
-        .args(&["-n", "kill", &format!("-{}", signal), &pid.to_string()])
+        .args(["-n", "kill", &format!("-{}", signal), &pid.to_string()])
         .output();
     match output {
         Ok(o) => {

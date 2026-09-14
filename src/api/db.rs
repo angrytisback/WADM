@@ -53,7 +53,7 @@ pub async fn list_dbs() -> impl Responder {
 
     // 1. Native MySQL
     if let Ok(output) = Command::new("mysql")
-        .args(&["-e", "SHOW DATABASES"])
+        .args(["-e", "SHOW DATABASES"])
         .output()
     {
         if output.status.success() {
@@ -73,14 +73,14 @@ pub async fn list_dbs() -> impl Responder {
 
     // 2. Native Postgres
     if let Ok(output) = Command::new("sudo")
-        .args(&["-n", "-u", "postgres", "psql", "-l", "-t", "-A", "-F", "|"])
+        .args(["-n", "-u", "postgres", "psql", "-l", "-t", "-A", "-F", "|"])
         .output()
     {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
                 let parts: Vec<&str> = line.split('|').collect();
-                if parts.len() >= 1 && !parts[0].trim().is_empty() {
+                if !parts.is_empty() && !parts[0].trim().is_empty() {
                     dbs.push(Database {
                         name: parts[0].to_string(),
                         engine: "postgres".to_string(),
@@ -94,7 +94,7 @@ pub async fn list_dbs() -> impl Responder {
 
     // 3. Docker Databases
     if let Ok(output) = Command::new("docker")
-        .args(&["ps", "--format", "{{.ID}}|{{.Image}}|{{.Names}}"])
+        .args(["ps", "--format", "{{.ID}}|{{.Image}}|{{.Names}}"])
         .output()
     {
         if output.status.success() {
@@ -110,7 +110,7 @@ pub async fn list_dbs() -> impl Responder {
 
                 if image.contains("postgres") {
                     if let Ok(db_out) = Command::new("docker")
-                        .args(&[
+                        .args([
                             "exec", id, "psql", "-U", "postgres", "-l", "-t", "-A", "-F", "|",
                         ])
                         .output()
@@ -119,7 +119,7 @@ pub async fn list_dbs() -> impl Responder {
                             let db_stdout = String::from_utf8_lossy(&db_out.stdout);
                             for db_line in db_stdout.lines() {
                                 let db_parts: Vec<&str> = db_line.split('|').collect();
-                                if db_parts.len() >= 1 && !db_parts[0].trim().is_empty() {
+                                if !db_parts.is_empty() && !db_parts[0].trim().is_empty() {
                                     dbs.push(Database {
                                         name: db_parts[0].to_string(),
                                         engine: "postgres".to_string(),
@@ -132,7 +132,7 @@ pub async fn list_dbs() -> impl Responder {
                     }
                 } else if image.contains("mysql") || image.contains("mariadb") {
                     if let Ok(db_out) = Command::new("docker")
-                        .args(&["exec", id, "mysql", "-uroot", "-e", "SHOW DATABASES", "-N"])
+                        .args(["exec", id, "mysql", "-uroot", "-e", "SHOW DATABASES", "-N"])
                         .output()
                     {
                         if db_out.status.success() {
@@ -166,7 +166,7 @@ pub async fn list_tables(
 
     if !is_valid_db_identifier(&engine)
         || !is_valid_db_identifier(&db_name)
-        || container_id.map_or(false, |c| !is_valid_db_identifier(c))
+        || container_id.is_some_and(|c| !is_valid_db_identifier(c))
     {
         return HttpResponse::BadRequest().json("Invalid identifier");
     }
@@ -176,7 +176,7 @@ pub async fn list_tables(
     if engine == "mysql" {
         let mut cmd = if let Some(cid) = container_id {
             let mut c = Command::new("docker");
-            c.args(&[
+            c.args([
                 "exec",
                 cid,
                 "mysql",
@@ -190,7 +190,7 @@ pub async fn list_tables(
             c
         } else {
             let mut c = Command::new("mysql");
-            c.args(&["-D", &db_name, "-e", "SHOW TABLES", "-N"]);
+            c.args(["-D", &db_name, "-e", "SHOW TABLES", "-N"]);
             c
         };
 
@@ -207,13 +207,13 @@ pub async fn list_tables(
     } else if engine == "postgres" {
         let mut cmd = if let Some(cid) = container_id {
             let mut c = Command::new("docker");
-            c.args(&[
+            c.args([
                 "exec", cid, "psql", "-U", "postgres", "-d", &db_name, "-t", "-A", "-c", "\\dt",
             ]);
             c
         } else {
             let mut c = Command::new("sudo");
-            c.args(&[
+            c.args([
                 "-n", "-u", "postgres", "psql", "-d", &db_name, "-t", "-A", "-c", "\\dt",
             ]);
             c
@@ -247,7 +247,7 @@ pub async fn get_table_data(
     if !is_valid_db_identifier(&engine)
         || !is_valid_db_identifier(&db_name)
         || !is_valid_db_identifier(&table_name)
-        || container_id.map_or(false, |c| !is_valid_db_identifier(c))
+        || container_id.is_some_and(|c| !is_valid_db_identifier(c))
     {
         return HttpResponse::BadRequest().json("Invalid identifier");
     }
@@ -266,7 +266,7 @@ pub async fn execute_query(
 
     if !is_valid_db_identifier(&engine)
         || !is_valid_db_identifier(&db_name)
-        || container_id.map_or(false, |c| !is_valid_db_identifier(c))
+        || container_id.is_some_and(|c| !is_valid_db_identifier(c))
     {
         return HttpResponse::BadRequest().json("Invalid identifier");
     }
@@ -313,11 +313,11 @@ async fn execute_sql_internal(
     if engine == "mysql" {
         let mut cmd = if let Some(cid) = container_id {
             let mut c = Command::new("docker");
-            c.args(&["exec", cid, "mysql", "-uroot", "-D", db, "-B", "-e", query]);
+            c.args(["exec", cid, "mysql", "-uroot", "-D", db, "-B", "-e", query]);
             c
         } else {
             let mut c = Command::new("mysql");
-            c.args(&["-D", db, "-B", "-e", query]);
+            c.args(["-D", db, "-B", "-e", query]);
             c
         };
 
@@ -339,13 +339,13 @@ async fn execute_sql_internal(
     } else if engine == "postgres" {
         let mut cmd = if let Some(cid) = container_id {
             let mut c = Command::new("docker");
-            c.args(&[
+            c.args([
                 "exec", cid, "psql", "-U", "postgres", "-d", db, "-A", "-F", "\t", "-c", query,
             ]);
             c
         } else {
             let mut c = Command::new("sudo");
-            c.args(&[
+            c.args([
                 "-n", "-u", "postgres", "psql", "-d", db, "-A", "-F", "\t", "-c", query,
             ]);
             c
@@ -424,7 +424,7 @@ pub async fn create_backup(
 
     if !is_valid_db_identifier(&engine)
         || !is_valid_db_identifier(&db)
-        || container_id.map_or(false, |c| !is_valid_db_identifier(c))
+        || container_id.is_some_and(|c| !is_valid_db_identifier(c))
     {
         return HttpResponse::BadRequest().json("Invalid identifier");
     }
@@ -441,7 +441,7 @@ pub async fn create_backup(
     let success = if engine == "mysql" {
         if let Some(cid) = container_id {
             let output = Command::new("sh")
-                .args(&[
+                .args([
                     "-c",
                     &format!("docker exec {} mysqldump -uroot {} > {}", cid, db, filepath),
                 ])
@@ -449,14 +449,14 @@ pub async fn create_backup(
             output.map(|o| o.status.success()).unwrap_or(false)
         } else {
             let output = Command::new("sh")
-                .args(&["-c", &format!("mysqldump -uroot {} > {}", db, filepath)])
+                .args(["-c", &format!("mysqldump -uroot {} > {}", db, filepath)])
                 .output();
             output.map(|o| o.status.success()).unwrap_or(false)
         }
     } else if engine == "postgres" {
         if let Some(cid) = container_id {
             let output = Command::new("sh")
-                .args(&[
+                .args([
                     "-c",
                     &format!(
                         "docker exec {} pg_dump -U postgres {} > {}",
@@ -467,7 +467,7 @@ pub async fn create_backup(
             output.map(|o| o.status.success()).unwrap_or(false)
         } else {
             let output = Command::new("sh")
-                .args(&[
+                .args([
                     "-c",
                     &format!("sudo -n -u postgres pg_dump {} > {}", db, filepath),
                 ])
@@ -496,7 +496,7 @@ pub async fn restore_backup(
 
     if !is_valid_db_identifier(&engine)
         || !is_valid_db_identifier(&db)
-        || container_id.map_or(false, |c| !is_valid_db_identifier(c))
+        || container_id.is_some_and(|c| !is_valid_db_identifier(c))
     {
         return HttpResponse::BadRequest().json("Invalid identifier");
     }
@@ -515,7 +515,7 @@ pub async fn restore_backup(
     let success = if engine == "mysql" {
         if let Some(cid) = container_id {
             let output = Command::new("sh")
-                .args(&[
+                .args([
                     "-c",
                     &format!("docker exec -i {} mysql -uroot {} < {}", cid, db, filepath),
                 ])
@@ -523,14 +523,14 @@ pub async fn restore_backup(
             output.map(|o| o.status.success()).unwrap_or(false)
         } else {
             let output = Command::new("sh")
-                .args(&["-c", &format!("mysql -uroot {} < {}", db, filepath)])
+                .args(["-c", &format!("mysql -uroot {} < {}", db, filepath)])
                 .output();
             output.map(|o| o.status.success()).unwrap_or(false)
         }
     } else if engine == "postgres" {
         if let Some(cid) = container_id {
             let output = Command::new("sh")
-                .args(&[
+                .args([
                     "-c",
                     &format!(
                         "docker exec -i {} psql -U postgres -d {} < {}",
@@ -541,7 +541,7 @@ pub async fn restore_backup(
             output.map(|o| o.status.success()).unwrap_or(false)
         } else {
             let output = Command::new("sh")
-                .args(&[
+                .args([
                     "-c",
                     &format!("sudo -n -u postgres psql -d {} < {}", db, filepath),
                 ])

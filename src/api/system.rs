@@ -131,7 +131,7 @@ pub async fn get_detailed_info() -> impl Responder {
 
 fn fetch_smart_data() -> Option<Vec<SmartDisk>> {
     let output = Command::new("sudo")
-        .args(&["-n", "smartctl", "--scan", "--json"])
+        .args(["-n", "smartctl", "--scan", "--json"])
         .output()
         .ok()?;
 
@@ -148,7 +148,7 @@ fn fetch_smart_data() -> Option<Vec<SmartDisk>> {
     for device in devices {
         if let Some(name) = device.get("name").and_then(|n| n.as_str()) {
             if let Ok(detail_output) = Command::new("sudo")
-                .args(&["-n", "smartctl", "--all", "--json", name])
+                .args(["-n", "smartctl", "--all", "--json", name])
                 .output()
             {
                 if let Ok(detail_json) =
@@ -215,9 +215,9 @@ pub async fn reboot_system() -> impl Responder {
     actix_web::rt::spawn(async {
         tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
         let _ = Command::new("sudo")
-            .args(&["-n", "shutdown", "-r", "now"])
+            .args(["-n", "shutdown", "-r", "now"])
             .output();
-        let _ = Command::new("sudo").args(&["-n", "reboot"]).output();
+        let _ = Command::new("sudo").args(["-n", "reboot"]).output();
     });
     HttpResponse::Ok().json("Reboot initiated. Server is restarting now.")
 }
@@ -263,9 +263,9 @@ pub async fn handle_power_action(payload: web::Json<PowerAction>) -> impl Respon
             actix_web::rt::spawn(async {
                 tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
                 let _ = Command::new("sudo")
-                    .args(&["-n", "shutdown", "-r", "now"])
+                    .args(["-n", "shutdown", "-r", "now"])
                     .output();
-                let _ = Command::new("sudo").args(&["-n", "reboot"]).output();
+                let _ = Command::new("sudo").args(["-n", "reboot"]).output();
             });
             HttpResponse::Ok().json("Reboot initiated. Server is restarting now.")
         }
@@ -273,7 +273,7 @@ pub async fn handle_power_action(payload: web::Json<PowerAction>) -> impl Respon
             actix_web::rt::spawn(async {
                 tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
                 let _ = Command::new("sudo")
-                    .args(&["-n", "shutdown", "-h", "now"])
+                    .args(["-n", "shutdown", "-h", "now"])
                     .output();
             });
             HttpResponse::Ok().json("Shutdown initiated. Server is powering down now.")
@@ -281,7 +281,7 @@ pub async fn handle_power_action(payload: web::Json<PowerAction>) -> impl Respon
         "schedule" | "schedule_shutdown" => {
             let mins = if total_minutes > 0 { total_minutes } else { 60 };
             let output = Command::new("sudo")
-                .args(&["-n", "shutdown", "-h", &format!("+{}", mins)])
+                .args(["-n", "shutdown", "-h", &format!("+{}", mins)])
                 .output();
             match output {
                 Ok(o) if o.status.success() => {
@@ -296,7 +296,7 @@ pub async fn handle_power_action(payload: web::Json<PowerAction>) -> impl Respon
         "schedule_reboot" => {
             let mins = if total_minutes > 0 { total_minutes } else { 60 };
             let output = Command::new("sudo")
-                .args(&["-n", "shutdown", "-r", &format!("+{}", mins)])
+                .args(["-n", "shutdown", "-r", &format!("+{}", mins)])
                 .output();
             match output {
                 Ok(o) if o.status.success() => {
@@ -310,7 +310,7 @@ pub async fn handle_power_action(payload: web::Json<PowerAction>) -> impl Respon
         }
         "cancel" => {
             let output = Command::new("sudo")
-                .args(&["-n", "shutdown", "-c"])
+                .args(["-n", "shutdown", "-c"])
                 .output();
             match output {
                 Ok(o) if o.status.success() => {
@@ -363,11 +363,7 @@ fn do_memory_flush() -> MaintenanceResult {
         .status();
 
     let (_, avail_after, _, _) = get_memory_metrics_kb();
-    let freed_kb = if avail_after > avail_before {
-        avail_after - avail_before
-    } else {
-        0
-    };
+    let freed_kb = avail_after.saturating_sub(avail_before);
     let freed_mb = (freed_kb as f64) / 1024.0;
 
     match drop_res {
@@ -423,10 +419,10 @@ fn do_cache_clean() -> MaintenanceResult {
         .unwrap_or(false)
     {
         let _ = Command::new("sudo")
-            .args(&["-n", "apt-get", "clean"])
+            .args(["-n", "apt-get", "clean"])
             .output();
         let _ = Command::new("sudo")
-            .args(&["-n", "apt-get", "autoclean"])
+            .args(["-n", "apt-get", "autoclean"])
             .output();
         logs.push("Cleaned APT package cache archives.".to_string());
     } else if Command::new("which")
@@ -436,7 +432,7 @@ fn do_cache_clean() -> MaintenanceResult {
         .unwrap_or(false)
     {
         let _ = Command::new("sudo")
-            .args(&["-n", "dnf", "clean", "all"])
+            .args(["-n", "dnf", "clean", "all"])
             .output();
         logs.push("Cleaned DNF package cache archives.".to_string());
     } else if Command::new("which")
@@ -446,7 +442,7 @@ fn do_cache_clean() -> MaintenanceResult {
         .unwrap_or(false)
     {
         let _ = Command::new("sudo")
-            .args(&["-n", "pacman", "-Sc", "--noconfirm"])
+            .args(["-n", "pacman", "-Sc", "--noconfirm"])
             .output();
         logs.push("Cleaned Pacman package cache archives.".to_string());
     }
@@ -459,7 +455,7 @@ fn do_cache_clean() -> MaintenanceResult {
         .unwrap_or(false)
     {
         let j_res = Command::new("sudo")
-            .args(&["-n", "journalctl", "--vacuum-time=3d"])
+            .args(["-n", "journalctl", "--vacuum-time=3d"])
             .output();
         if let Ok(j) = j_res {
             let s = String::from_utf8_lossy(&j.stdout).trim().to_string();
@@ -483,11 +479,7 @@ fn do_cache_clean() -> MaintenanceResult {
     logs.push("Dropped kernel PageCache, dentries, and inode caches.".to_string());
 
     let (_, avail_after, _, _) = get_memory_metrics_kb();
-    let freed_kb = if avail_after > avail_before {
-        avail_after - avail_before
-    } else {
-        0
-    };
+    let freed_kb = avail_after.saturating_sub(avail_before);
     let freed_mb = (freed_kb as f64) / 1024.0;
 
     let msg = if freed_mb > 1.0 {
@@ -570,7 +562,7 @@ fn do_swap_flush() -> MaintenanceResult {
 }
 
 fn do_trim() -> MaintenanceResult {
-    let res = Command::new("sudo").args(&["-n", "fstrim", "-av"]).output();
+    let res = Command::new("sudo").args(["-n", "fstrim", "-av"]).output();
     match res {
         Ok(o) if o.status.success() => {
             let out = String::from_utf8_lossy(&o.stdout).trim().to_string();
@@ -654,11 +646,11 @@ pub async fn handle_maintenance_action(payload: web::Json<MaintenanceAction>) ->
 
 pub async fn get_dns_info() -> impl Responder {
     let output = Command::new("sudo")
-        .args(&["-n", "resolvectl", "statistics"])
+        .args(["-n", "resolvectl", "statistics"])
         .output()
         .or_else(|_| {
             Command::new("sudo")
-                .args(&["-n", "systemd-resolve", "--statistics"])
+                .args(["-n", "systemd-resolve", "--statistics"])
                 .output()
         });
 
@@ -675,11 +667,11 @@ pub async fn get_dns_info() -> impl Responder {
 
 pub async fn flush_dns() -> impl Responder {
     let output = Command::new("sudo")
-        .args(&["-n", "resolvectl", "flush-caches"])
+        .args(["-n", "resolvectl", "flush-caches"])
         .output()
         .or_else(|_| {
             Command::new("sudo")
-                .args(&["-n", "systemd-resolve", "--flush-caches"])
+                .args(["-n", "systemd-resolve", "--flush-caches"])
                 .output()
         });
 
@@ -721,7 +713,7 @@ pub async fn run_speedtest() -> impl Responder {
                 });
             }
         }
-        Err(std::io::Error::new(std::io::ErrorKind::Other, "Speedtest failed"))
+        Err(std::io::Error::other("Speedtest failed"))
     }).await;
 
     match result {

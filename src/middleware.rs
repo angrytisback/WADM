@@ -91,16 +91,16 @@ where
         ) {
             Ok(_token_data) => {
                 let fut = self.service.call(req);
-                return Box::pin(async move {
+                Box::pin(async move {
                     let res = fut.await?;
                     Ok(res.map_into_left_body())
-                });
+                })
             }
             Err(_) => {
-                return Box::pin(async move {
+                Box::pin(async move {
                     let res = HttpResponse::Unauthorized().body("Invalid token");
                     Ok(ServiceResponse::new(req.into_parts().0, res).map_into_right_body())
-                });
+                })
             }
         }
     }

@@ -35,7 +35,7 @@ pub async fn get_status() -> impl Responder {
     }
 
     let output = Command::new("sudo")
-        .args(&["-n", "ufw", "status", "numbered"])
+        .args(["-n", "ufw", "status", "numbered"])
         .output();
 
     match output {
@@ -103,7 +103,7 @@ pub async fn set_status(body: web::Json<FirewallAction>) -> impl Responder {
             .status()
     } else {
         Command::new("sudo")
-            .args(&["-n", "ufw", "disable"])
+            .args(["-n", "ufw", "disable"])
             .status()
     };
 

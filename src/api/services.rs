@@ -21,7 +21,7 @@ pub async fn list_services() -> impl Responder {
     let mut seen_names = HashSet::new();
 
     if let Ok(output) = Command::new("sudo")
-        .args(&[
+        .args([
             "-n",
             "systemctl",
             "list-units",
@@ -64,7 +64,7 @@ pub async fn list_services() -> impl Responder {
     }
 
     if let Ok(output) = Command::new("sudo")
-        .args(&[
+        .args([
             "-n",
             "systemctl",
             "list-unit-files",
@@ -126,7 +126,7 @@ pub async fn control_service(
     }
 
     let output = Command::new("sudo")
-        .args(&["-n", "systemctl", action, &service_name])
+        .args(["-n", "systemctl", action, &service_name])
         .output();
 
     match output {
@@ -147,7 +147,7 @@ pub async fn get_service_logs(path: web::Path<String>) -> impl Responder {
     }
 
     let output = Command::new("sudo")
-        .args(&[
+        .args([
             "-n",
             "journalctl",
             "-u",
