@@ -1,0 +1,52 @@
+[Unit]
+Description=WADM - Web Administration for Linux
+Documentation=https://github.com/angrytisback/WADM
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=wadm
+Group=wadm
+WorkingDirectory=/var/lib/wadm
+
+# Binary location installed by install.sh or package
+ExecStart=/usr/local/bin/wadm
+
+# Runtime environment
+Environment=RUST_LOG=info
+Environment=WADM_DATA_DIR=/var/lib/wadm
+
+# Restart policy
+Restart=on-failure
+RestartSec=5s
+StartLimitIntervalSec=60s
+StartLimitBurst=3
+
+# Standard I/O
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=wadm
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=512
+
+# Process hardening
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ReadWritePaths=/var/lib/wadm
+
+# Note: NoNewPrivileges and RestrictSUIDSGID must remain disabled so that
+# the 'wadm' service account can invoke whitelisted commands via sudo.
+# PrivateDevices must remain disabled so that smartctl can query block devices (/dev/sd*, /dev/nvme*).
+
+LockPersonality=true
+RemoveIPC=true
+
+[Install]
+WantedBy=multi-user.target

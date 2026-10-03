@@ -241,13 +241,27 @@ pub struct InstallReq {
 pub async fn install_dependency(body: web::Json<InstallReq>) -> impl Responder {
     let name = body.name.as_str();
 
-    // Security: Only allow specific known dependencies
-    let (package_name, cmd_check) = match name {
-        "S.M.A.R.T. Tools" => ("smartmontools", "smartctl"),
-        "UFW Firewall" => ("ufw", "ufw"),
-        "Lm-Sensors" => ("lm-sensors", "sensors"),
-        "Docker" => ("docker.io", "docker"),
-        "Intel GPU Tools" => ("intel-gpu-tools", "intel_gpu_top"),
+    // Determine package manager first
+    let (pm, install_args_prefix) = if check_command("apt") {
+        ("apt", vec!["install", "-y"])
+    } else if check_command("pacman") {
+        ("pacman", vec!["-S", "--noconfirm"])
+    } else if check_command("dnf") {
+        ("dnf", vec!["install", "-y"])
+    } else {
+        return HttpResponse::InternalServerError().json("No supported package manager found");
+    };
+
+    // Security & Distro Awareness: Map dependency to distro-specific package name and command check
+    let (package_name, cmd_check) = match (name, pm) {
+        ("S.M.A.R.T. Tools", _) => ("smartmontools", "smartctl"),
+        ("UFW Firewall", _) => ("ufw", "ufw"),
+        ("Lm-Sensors", "pacman") => ("lm_sensors", "sensors"),
+        ("Lm-Sensors", _) => ("lm-sensors", "sensors"),
+        ("Docker", "pacman") => ("docker", "docker"),
+        ("Docker", "dnf") => ("docker", "docker"),
+        ("Docker", _) => ("docker.io", "docker"),
+        ("Intel GPU Tools", _) => ("intel-gpu-tools", "intel_gpu_top"),
         _ => return HttpResponse::BadRequest().json("Invalid dependency name"),
     };
 
@@ -255,16 +269,8 @@ pub async fn install_dependency(body: web::Json<InstallReq>) -> impl Responder {
         return HttpResponse::Ok().json(format!("{} is already installed.", name));
     }
 
-    // Determine package manager
-    let (pm, install_cmd) = if check_command("apt") {
-        ("apt", vec!["install", "-y", package_name])
-    } else if check_command("dnf") {
-        ("dnf", vec!["install", "-y", package_name])
-    } else if check_command("pacman") {
-        ("pacman", vec!["-S", "--noconfirm", package_name])
-    } else {
-        return HttpResponse::InternalServerError().json("No supported package manager found");
-    };
+    let mut install_cmd = install_args_prefix;
+    install_cmd.push(package_name);
 
     // Execute
     // Note: This requires the user running WADM to have sudo NOPASSWD or be root.

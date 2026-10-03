@@ -88,7 +88,14 @@ function MainContent() {
 
   const canManage = systemInfo?.is_root || systemInfo?.has_sudo;
 
-  const renderNavItem = (item: any) => {
+  interface NavItem {
+    id: string;
+    label: string;
+    icon: React.ComponentType<{ style?: React.CSSProperties }>;
+    privileged?: boolean;
+  }
+
+  const renderNavItem = (item: NavItem) => {
     const isDisabled = item.privileged && !canManage;
     return (
       <div

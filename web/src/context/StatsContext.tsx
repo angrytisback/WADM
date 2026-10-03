@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import type { SystemStats } from '../types';
 import { useAuth } from './AuthContext';
@@ -28,6 +29,8 @@ export interface PerformanceData {
 interface StatsContextType {
     stats: SystemStats | null;
     history: PerformanceData[];
+    refreshInterval: number;
+    setRefreshInterval: (ms: number) => void;
 }
 
 const StatsContext = createContext<StatsContextType | undefined>(undefined);
@@ -36,6 +39,16 @@ export function StatsProvider({ children }: { children: React.ReactNode }) {
     const { isAuthenticated, logout } = useAuth();
     const { setServerOffline } = useServerStatus();
     const [stats, setStats] = useState<SystemStats | null>(null);
+    const [refreshInterval, setRefreshIntervalState] = useState<number>(() => {
+        const saved = localStorage.getItem('wadm_stats_interval');
+        return saved ? parseInt(saved, 10) : 2000;
+    });
+
+    const setRefreshInterval = (ms: number) => {
+        setRefreshIntervalState(ms);
+        localStorage.setItem('wadm_stats_interval', ms.toString());
+    };
+
     // Initialize with empty data to fill the chart initially
     const [history, setHistory] = useState<PerformanceData[]>(() =>
         Array(60).fill({
@@ -115,13 +128,13 @@ export function StatsProvider({ children }: { children: React.ReactNode }) {
         };
 
         fetchStats();
-        const interval = setInterval(fetchStats, 2000);
+        const interval = setInterval(fetchStats, refreshInterval);
 
         return () => clearInterval(interval);
-    }, [isAuthenticated, logout, setServerOffline]);
+    }, [isAuthenticated, logout, setServerOffline, refreshInterval]);
 
     return (
-        <StatsContext.Provider value={{ stats, history }}>
+        <StatsContext.Provider value={{ stats, history, refreshInterval, setRefreshInterval }}>
             {children}
         </StatsContext.Provider>
     );

@@ -2,6 +2,14 @@
 name = "wadm"
 version = "0.96.0"
 edition = "2021"
+authors = ["angrytisback"]
+description = "Modern, ultra-fast and lightweight Linux Web Administration Panel"
+repository = "https://github.com/angrytisback/WADM"
+homepage = "https://github.com/angrytisback/WADM"
+license = "MIT"
+readme = "README.md"
+keywords = ["linux", "admin", "dashboard", "docker", "sysadmin"]
+categories = ["command-line-utilities", "network-programming"]
 
 [dependencies]
 actix-web = "4"

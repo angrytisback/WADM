@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
 
 interface ServerStatusContextType {

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { FaShieldAlt, FaExclamationTriangle } from 'react-icons/fa';
 
 interface RootWarningModalProps {
@@ -7,21 +7,17 @@ interface RootWarningModalProps {
 }
 
 export function RootWarningModal({ isRoot, hasSudo }: RootWarningModalProps) {
-    const [isOpen, setIsOpen] = useState(false);
-
-    useEffect(() => {
-        const dismissed = sessionStorage.getItem('root_warning_dismissed');
-        if (!isRoot && dismissed !== 'true') {
-            setIsOpen(true);
-        }
-    }, [isRoot]);
+    const [isOpen, setIsOpen] = useState(() => {
+        const dismissed = typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('root_warning_dismissed') : 'true';
+        return !isRoot && dismissed !== 'true';
+    });
 
     const handleDismiss = () => {
         sessionStorage.setItem('root_warning_dismissed', 'true');
         setIsOpen(false);
     };
 
-    if (!isOpen) return null;
+    if (isRoot || !isOpen) return null;
 
     return (
         <div style={{

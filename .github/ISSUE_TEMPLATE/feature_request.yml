@@ -1,0 +1,53 @@
+name: Feature Request
+description: Propose a technical improvement or new capability for WADM.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Feature requests should describe a concrete, implementable capability.
+        For open-ended discussion, use GitHub Discussions before opening this form.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: Describe the specific limitation or gap in the current implementation that this feature addresses.
+      placeholder: |
+        The current log viewer does not support filtering by severity level. When debugging
+        high-traffic services, the signal-to-noise ratio makes it difficult to identify errors.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Implementation
+      description: |
+        Describe the technical approach. Reference specific backend endpoints, frontend
+        components, or system interfaces involved. Be as precise as possible.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: What alternative approaches have you evaluated, and why was this one chosen?
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Affected Scope
+      description: Which part of the codebase does this primarily affect?
+      options:
+        - Backend API (src/api/)
+        - Frontend UI (web/src/)
+        - App Store Templates
+        - CI/CD and Release Pipeline
+        - Documentation
+        - Containerization / Deployment
+        - Security Model
+      multiple: true
+    validations:
+      required: true

@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+/* eslint-disable react-refresh/only-export-components */
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import type { SystemInfo } from '../types';
 import { useAuth } from './AuthContext';
 
@@ -15,7 +16,7 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
     const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
     const [loading, setLoading] = useState(false);
 
-    const refreshSystemInfo = async () => {
+    const refreshSystemInfo = useCallback(async () => {
         if (!isAuthenticated) return;
         setLoading(true);
         try {
@@ -29,7 +30,7 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
         } finally {
             setLoading(false);
         }
-    };
+    }, [isAuthenticated]);
 
     useEffect(() => {
         if (isAuthenticated) {
@@ -37,7 +38,7 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
         } else {
             setSystemInfo(null);
         }
-    }, [isAuthenticated]);
+    }, [isAuthenticated, refreshSystemInfo]);
 
     return (
         <SystemContext.Provider value={{ systemInfo, loading, refreshSystemInfo }}>

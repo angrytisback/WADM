@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+/* eslint-disable react-refresh/only-export-components */
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 
@@ -12,13 +13,16 @@ interface TerminalContextType {
 const TerminalContext = createContext<TerminalContextType | undefined>(undefined);
 
 export function TerminalProvider({ children }: { children: React.ReactNode }) {
-    const [status, setStatus] = useState<TerminalContextType['status']>('connecting');
+    const [status, setStatus] = useState<TerminalContextType['status']>('disconnected');
+    const [xterm, setXterm] = useState<XTerm | null>(null);
+    const [fitAddon, setFitAddon] = useState<FitAddon | null>(null);
+
     const xtermRef = useRef<XTerm | null>(null);
     const fitRef = useRef<FitAddon | null>(null);
     const wsRef = useRef<WebSocket | null>(null);
     const reconnectTimeoutRef = useRef<number | null>(null);
     
-    const connect = () => {
+    const connect = useCallback(function doConnect() {
         // Clear any pending reconnection
         if (reconnectTimeoutRef.current) {
             window.clearTimeout(reconnectTimeoutRef.current);
@@ -39,8 +43,8 @@ export function TerminalProvider({ children }: { children: React.ReactNode }) {
             return;
         }
 
-        const wsUrl = `${protocol}//${window.location.host}/api/terminal/ws?token=${token}`;
-        const ws = new WebSocket(wsUrl);
+        const wsUrl = `${protocol}//${window.location.host}/api/terminal/ws`;
+        const ws = new WebSocket(wsUrl, token);
         wsRef.current = ws;
 
         ws.onopen = () => {
@@ -79,7 +83,7 @@ export function TerminalProvider({ children }: { children: React.ReactNode }) {
                 
                 // Throttled auto-reconnect
                 reconnectTimeoutRef.current = window.setTimeout(() => {
-                    connect();
+                    doConnect();
                 }, 3000);
             }
         };
@@ -87,7 +91,7 @@ export function TerminalProvider({ children }: { children: React.ReactNode }) {
         ws.onerror = () => {
             setStatus('disconnected');
         };
-    };
+    }, []);
 
     useEffect(() => {
         // Initialize xterm once
@@ -107,6 +111,8 @@ export function TerminalProvider({ children }: { children: React.ReactNode }) {
         
         xtermRef.current = term;
         fitRef.current = fitAddon;
+        setXterm(term);
+        setFitAddon(fitAddon);
 
         // Handle data input
         term.onData(data => {
@@ -122,7 +128,7 @@ export function TerminalProvider({ children }: { children: React.ReactNode }) {
             }
         });
 
-        connect();
+        // Note: connect() is not called here on mount; it will be lazily called when Terminal component becomes visible.
 
         return () => {
             if (reconnectTimeoutRef.current) window.clearTimeout(reconnectTimeoutRef.current);
@@ -132,7 +138,7 @@ export function TerminalProvider({ children }: { children: React.ReactNode }) {
     }, []);
 
     return (
-        <TerminalContext.Provider value={{ status, xterm: xtermRef.current, fitAddon: fitRef.current, connect }}>
+        <TerminalContext.Provider value={{ status, xterm, fitAddon, connect }}>
             {children}
         </TerminalContext.Provider>
     );

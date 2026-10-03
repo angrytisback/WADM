@@ -47,6 +47,10 @@ pub fn config(cfg: &mut web::ServiceConfig) {
 
     cfg.service(web::resource("/apps").route(web::get().to(apps::list_apps)));
     cfg.service(web::resource("/apps/install").route(web::post().to(apps::install_app)));
+    cfg.service(
+        web::resource("/apps/{id}/credentials").route(web::get().to(apps::get_app_credentials)),
+    );
+    cfg.service(web::resource("/apps/{id}/uninstall").route(web::post().to(apps::uninstall_app)));
 
     cfg.service(web::resource("/files/list").route(web::get().to(files::list_files)));
     cfg.service(web::resource("/files/read").route(web::get().to(files::read_file)));

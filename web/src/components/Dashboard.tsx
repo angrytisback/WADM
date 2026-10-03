@@ -311,8 +311,17 @@ export default function Dashboard({ stats, onNavigate }: DashboardProps) {
     );
 }
 
+interface SystemFooterInfo {
+    host_name?: string;
+    os_name?: string;
+    os_version?: string;
+    uptime?: number;
+    cpu_temp?: number;
+    gpu_temp?: number;
+}
+
 function DashboardFooter() {
-    const [info, setInfo] = useState<any>(null);
+    const [info, setInfo] = useState<SystemFooterInfo | null>(null);
 
     useEffect(() => {
         fetch('/api/system')
@@ -335,7 +344,7 @@ function DashboardFooter() {
             </div>
             <div>
                 <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '0.2rem' }}>UPTIME</div>
-                <div style={{ fontWeight: 500 }}>{formatUptime(info.uptime)}</div>
+                <div style={{ fontWeight: 500 }}>{formatUptime(info.uptime || 0)}</div>
             </div>
             <div>
                 <div style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '0.2rem' }}>TEMPERATURES</div>

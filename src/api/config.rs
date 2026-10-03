@@ -24,7 +24,7 @@ pub fn save_config(config: &AppConfig) -> std::io::Result<()> {
 }
 
 pub async fn get_config(data: web::Data<Mutex<AppConfig>>) -> impl Responder {
-    let config = data.lock().unwrap();
+    let config = data.lock().unwrap_or_else(|e| e.into_inner());
     HttpResponse::Ok().json(&*config)
 }
 
@@ -37,7 +37,7 @@ pub async fn update_config(
     body: web::Json<UpdateConfigReq>,
     data: web::Data<Mutex<AppConfig>>,
 ) -> impl Responder {
-    let mut config = data.lock().unwrap();
+    let mut config = data.lock().unwrap_or_else(|e| e.into_inner());
     config.developer_mode = body.developer_mode;
 
     if let Err(e) = save_config(&config) {

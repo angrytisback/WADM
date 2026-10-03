@@ -18,23 +18,23 @@ export const ServerStatusOverlay: React.FC = () => {
   const [rebootOnline, setRebootOnline] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
   const [pingAttempts, setPingAttempts] = useState(0);
-  const startTimeRef = useRef<number>(Date.now());
+  const startTimeRef = useRef<number>(0);
 
   // Timer for reboot elapsed time
   useEffect(() => {
-    if (!isRebooting) {
-      setElapsed(0);
-      setRebootOnline(false);
-      setPingAttempts(0);
-      return;
-    }
+    if (!isRebooting) return;
 
     startTimeRef.current = Date.now();
     const timer = setInterval(() => {
       setElapsed(Math.floor((Date.now() - startTimeRef.current) / 1000));
     }, 1000);
 
-    return () => clearInterval(timer);
+    return () => {
+      clearInterval(timer);
+      setElapsed(0);
+      setRebootOnline(false);
+      setPingAttempts(0);
+    };
   }, [isRebooting]);
 
   // Active polling during reboot (wait at least 8s after reboot trigger before checking for comeback)

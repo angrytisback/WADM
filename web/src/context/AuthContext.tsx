@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import { createContext, useContext, useState, useEffect, useRef } from 'react';
+import { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import type { ReactNode } from 'react';
 
 interface AuthContextType {
@@ -30,22 +30,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // without needing to be re-bound on every render (which causes race conditions with child effects).
     const tokenRef = useRef<string | null>(token);
 
-    const login = (newToken: string) => {
+    const login = useCallback((newToken: string) => {
         localStorage.setItem('wadm_token', newToken);
         tokenRef.current = newToken; // Update immediately
         setToken(newToken);
         setIsAuthenticated(true);
         setSetupRequired(false);
-    };
+    }, []);
 
-    const logout = () => {
+    const logout = useCallback(() => {
         localStorage.removeItem('wadm_token');
         tokenRef.current = null; // Update immediately
         setToken(null);
         setIsAuthenticated(false);
-    };
+    }, []);
 
-    const checkStatus = async () => {
+    const checkStatus = useCallback(async () => {
         try {
             const res = await fetch('/api/auth/status');
             if (res.ok) {
@@ -57,10 +57,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             console.error("Auth status check failed", err);
         }
         return false;
-    };
+    }, []);
 
     // Monkey patch window.fetch to insert token automatically.
-    // This effect runs ONCE.
     useEffect(() => {
         const originalFetch = window.fetch;
         window.fetch = async (...args) => {
@@ -68,7 +67,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             const newConfig = config || {};
 
             const currentToken = tokenRef.current;
-            if (currentToken) {
+            const urlString = typeof resource === 'string' ? resource : resource instanceof Request ? resource.url : '';
+            const isInternalOrRelative = urlString.startsWith('/') || urlString.startsWith(window.location.origin);
+
+            if (currentToken && isInternalOrRelative) {
                 newConfig.headers = {
                     ...newConfig.headers,
                     'Authorization': `Bearer ${currentToken}`
@@ -78,26 +80,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             const response = await originalFetch(resource, newConfig);
 
             if (response.status === 401) {
-                // Token expired or invalid
-                // We cannot call logout() directly here easily because it updates state.
-                // But we can manually clear storage and force reload or dispatch event.
-                // However, since we define logout inside the component, we can try to call it if we extract logic.
-                // BUT, calling state setter from here is fine as long as we don't have stale closures on 'logout'.
-                // 'logout' function is recreated on every render? Yes.
-                // So we can't use 'logout' from the closure if this effect runs once.
-
-                // Workaround: We will just clear storage and reload the page if it's a 401 on an API call (except login/status).
-                // Actually, let's just emit a custom event or let the component handle it?
-                // Step 175 StatsContext handles 401 by calling logout() passed via context. 
-                // That logout() is the one from the *latest* render context.
-                // So we DON'T need to handle 401 logout *here* inside the interceptor if components handle it.
-                // BUT the original code did handle it here: "logout();".
-                // If we want to support global 401 logout from the interceptor running once, we need a mutable ref to the logout function.
-
-                // Let's rely on components (like StatsContext) handling 401 for now, or use a ref for logout too.
-                if (logoutRef.current) {
-                    logoutRef.current();
-                }
+                logout();
             }
 
             return response;
@@ -106,14 +89,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return () => {
             window.fetch = originalFetch;
         };
-    }, []);
-
-    // Ref for logout to be used inside the static interceptor
-    const logoutRef = useRef(logout);
-    useEffect(() => {
-        logoutRef.current = logout;
     }, [logout]);
-
 
     useEffect(() => {
         const initAuth = async () => {
@@ -122,7 +98,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             }
         };
         initAuth();
-    }, [token]);
+    }, [token, checkStatus]);
 
     return (
         <AuthContext.Provider value={{ isAuthenticated, token, login, logout, checkStatus, setupRequired }}>

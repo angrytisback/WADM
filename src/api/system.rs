@@ -69,9 +69,18 @@ pub struct DnsInfo {
     pub stats: String,
 }
 
-pub async fn get_detailed_info() -> impl Responder {
-    let mut sys = System::new_all();
-    sys.refresh_all();
+pub async fn get_detailed_info(data: web::Data<crate::api::monitor::AppState>) -> impl Responder {
+    let (cpu_count, total_memory, used_memory, total_swap, used_swap) = {
+        let mut sys = data.sys.lock().unwrap_or_else(|e| e.into_inner());
+        sys.refresh_memory();
+        (
+            sys.cpus().len(),
+            sys.total_memory(),
+            sys.used_memory(),
+            sys.total_swap(),
+            sys.used_swap(),
+        )
+    };
 
     let username = std::process::Command::new("whoami")
         .output()
@@ -87,15 +96,13 @@ pub async fn get_detailed_info() -> impl Responder {
 
     let smart = fetch_smart_data();
 
-    // Fetch CPU Temp
-    let cpu_temp = Command::new("sh").arg("-c")
-        .arg("cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null || cat /sys/class/thermal/thermal_zone1/temp 2>/dev/null || echo 0")
-        .output()
-        .map(|o| {
-            let temp_str = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            let temp_val = temp_str.parse::<f32>().unwrap_or(0.0) / 1000.0;
-            if temp_val > 0.0 { Some(temp_val) } else { None }
-        }).unwrap_or(None);
+    // Fetch CPU Temp directly from sysfs (zero subprocess overhead)
+    let cpu_temp = std::fs::read_to_string("/sys/class/thermal/thermal_zone0/temp")
+        .or_else(|_| std::fs::read_to_string("/sys/class/thermal/thermal_zone1/temp"))
+        .ok()
+        .and_then(|s| s.trim().parse::<f32>().ok())
+        .map(|v| v / 1000.0)
+        .filter(|&v| v > 0.0);
 
     // Fetch GPU Temp (checks multiple vendors)
     let gpus = crate::api::monitor::get_gpu_stats();
@@ -112,11 +119,11 @@ pub async fn get_detailed_info() -> impl Responder {
         host_name: System::host_name().unwrap_or_else(|| "Unknown".to_string()),
         uptime: System::uptime(),
         cpu_arch: System::cpu_arch(),
-        cpu_count: sys.cpus().len(),
-        total_memory: sys.total_memory(),
-        used_memory: sys.used_memory(),
-        total_swap: sys.total_swap(),
-        used_swap: sys.used_swap(),
+        cpu_count,
+        total_memory,
+        used_memory,
+        total_swap,
+        used_swap,
         username: username.clone(),
         has_sudo,
         is_root: username == "root",
@@ -347,18 +354,29 @@ fn get_memory_metrics_kb() -> (u64, u64, u64, u64) {
     (total, available, swap_total, swap_free)
 }
 
+fn write_kernel_tunable(path: &str, val: &str) -> std::io::Result<std::process::Output> {
+    use std::io::Write;
+    let mut child = Command::new("sudo")
+        .args(["-n", "tee", path])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(val.as_bytes());
+        let _ = stdin.write_all(b"\n");
+    }
+
+    child.wait_with_output()
+}
+
 fn do_memory_flush() -> MaintenanceResult {
     let (_, avail_before, _, _) = get_memory_metrics_kb();
 
     let _ = Command::new("sync").status();
-    let drop_res = Command::new("sh")
-        .arg("-c")
-        .arg("echo 3 | sudo -n tee /proc/sys/vm/drop_caches")
-        .output();
-    let _ = Command::new("sh")
-        .arg("-c")
-        .arg("echo 1 | sudo -n tee /proc/sys/vm/compact_memory 2>/dev/null || true")
-        .status();
+    let drop_res = write_kernel_tunable("/proc/sys/vm/drop_caches", "3");
+    let _ = write_kernel_tunable("/proc/sys/vm/compact_memory", "1");
 
     let (_, avail_after, _, _) = get_memory_metrics_kb();
     let freed_kb = avail_after.saturating_sub(avail_before);
@@ -470,10 +488,7 @@ fn do_cache_clean() -> MaintenanceResult {
 
     // 3. Drop filesystem caches
     let _ = Command::new("sync").status();
-    let _ = Command::new("sh")
-        .arg("-c")
-        .arg("echo 3 | sudo -n tee /proc/sys/vm/drop_caches")
-        .output();
+    let _ = write_kernel_tunable("/proc/sys/vm/drop_caches", "3");
     logs.push("Dropped kernel PageCache, dentries, and inode caches.".to_string());
 
     let (_, avail_after, _, _) = get_memory_metrics_kb();
@@ -526,10 +541,15 @@ fn do_swap_flush() -> MaintenanceResult {
         };
     }
 
-    let res = Command::new("sh")
-        .arg("-c")
-        .arg("sudo -n swapoff -a && sudo -n swapon -a")
-        .output();
+    let res = (|| -> std::io::Result<std::process::Output> {
+        let off = Command::new("sudo")
+            .args(["-n", "swapoff", "-a"])
+            .output()?;
+        if !off.status.success() {
+            return Ok(off);
+        }
+        Command::new("sudo").args(["-n", "swapon", "-a"]).output()
+    })();
 
     match res {
         Ok(o) if o.status.success() => MaintenanceResult {
@@ -654,6 +674,16 @@ pub async fn get_dns_info() -> impl Responder {
 
     match output {
         Ok(o) => {
+            if !o.status.success() {
+                let err = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                let msg = if err.is_empty() {
+                    String::from_utf8_lossy(&o.stdout).trim().to_string()
+                } else {
+                    err
+                };
+                return HttpResponse::InternalServerError()
+                    .json(format!("Failed to get DNS stats: {}", msg));
+            }
             let stats = String::from_utf8_lossy(&o.stdout).to_string();
             HttpResponse::Ok().json(DnsInfo { stats })
         }
@@ -678,10 +708,14 @@ pub async fn flush_dns() -> impl Responder {
             if o.status.success() {
                 HttpResponse::Ok().json("DNS cache flushed")
             } else {
-                HttpResponse::InternalServerError().json(String::from_utf8_lossy(&o.stderr))
+                log::warn!("DNS flush error: {}", String::from_utf8_lossy(&o.stderr));
+                HttpResponse::InternalServerError().json("Failed to flush DNS cache")
             }
         }
-        Err(e) => HttpResponse::InternalServerError().json(e.to_string()),
+        Err(e) => {
+            log::error!("DNS flush command error: {}", e);
+            HttpResponse::InternalServerError().json("Failed to execute DNS flush")
+        }
     }
 }
 
@@ -694,10 +728,19 @@ pub struct SpeedtestResult {
 
 pub async fn run_speedtest() -> impl Responder {
     let result = actix_web::web::block(move || {
-        let output = Command::new("sh")
-            .arg("-c")
-            .arg("curl -sL https://raw.githubusercontent.com/sivel/speedtest-cli/master/speedtest.py | python3 - --json")
-            .output()?;
+        let cmd_name = if Command::new("which").arg("speedtest-cli").output().map(|o| o.status.success()).unwrap_or(false) {
+            "speedtest-cli"
+        } else if Command::new("which").arg("speedtest").output().map(|o| o.status.success()).unwrap_or(false) {
+            "speedtest"
+        } else {
+            return Err("speedtest-cli is not installed on the system. Please install it via Package Manager to use this feature.".to_string());
+        };
+
+        let output = Command::new(cmd_name)
+            .arg("--json")
+            .output()
+            .map_err(|e| format!("Failed to execute {}: {}", cmd_name, e))?;
+
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&stdout) {
@@ -711,12 +754,12 @@ pub async fn run_speedtest() -> impl Responder {
                 });
             }
         }
-        Err(std::io::Error::other("Speedtest failed"))
+        Err("Speedtest execution did not return valid metrics".to_string())
     }).await;
 
     match result {
         Ok(Ok(res)) => HttpResponse::Ok().json(res),
-        Ok(Err(e)) => HttpResponse::InternalServerError().json(format!("Speedtest failed: {}", e)),
-        Err(e) => HttpResponse::InternalServerError().json(format!("Execution failed: {}", e)),
+        Ok(Err(e)) => HttpResponse::BadRequest().json(e),
+        Err(_) => HttpResponse::InternalServerError().json("Speedtest execution failed"),
     }
 }

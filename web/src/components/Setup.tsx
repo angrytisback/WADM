@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { FaRocket, FaCheckCircle, FaLock, FaShieldAlt, FaTools, FaCheck } from 'react-icons/fa';
@@ -50,14 +50,7 @@ export default function Setup() {
         }
     }, [logs]);
 
-    // Fetch dependencies when entering step 3
-    useEffect(() => {
-        if (step === 3 && tempToken) {
-            fetchDependencies();
-        }
-    }, [step, tempToken]);
-
-    const fetchDependencies = async () => {
+    const fetchDependencies = useCallback(async () => {
         if (!tempToken) return;
         try {
             const res = await fetch('/api/system/dependencies', {
@@ -72,7 +65,14 @@ export default function Setup() {
             console.error(e);
             addToast("Failed to fetch dependencies", "error");
         }
-    };
+    }, [tempToken, addToast]);
+
+    // Fetch dependencies when entering step 3
+    useEffect(() => {
+        if (step === 3 && tempToken) {
+            fetchDependencies();
+        }
+    }, [step, tempToken, fetchDependencies]);
 
     const handleConfirm2FA = async (e: React.FormEvent) => {
         e.preventDefault();

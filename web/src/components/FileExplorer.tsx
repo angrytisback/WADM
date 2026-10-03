@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   FaFolder, FaFile, FaChevronRight, FaUpload, FaDownload, 
   FaTrash, FaEdit, FaFolderPlus, FaArrowUp, FaSave, FaTimes, FaSpinner,
@@ -24,7 +24,7 @@ export const FileExplorer: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { addToast } = useToast();
 
-  const fetchFiles = async (path: string) => {
+  const fetchFiles = useCallback(async (path: string) => {
     setLoading(true);
     try {
       const res = await fetch(`/api/files/list?path=${encodeURIComponent(path)}`);
@@ -37,11 +37,11 @@ export const FileExplorer: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [addToast]);
 
   useEffect(() => {
-    fetchFiles(currentPath);
-  }, []);
+    fetchFiles('/');
+  }, [fetchFiles]);
 
   const navigateTo = (path: string) => {
     fetchFiles(path);
@@ -144,6 +144,28 @@ export const FileExplorer: React.FC = () => {
       fetchFiles(currentPath);
     } catch {
       addToast('Upload failed', 'error');
+    }
+  };
+
+  const handleDownload = async (file: FileInfo) => {
+    try {
+      const url = `/api/files/download?path=${encodeURIComponent(file.path)}`;
+      const res = await fetch(url);
+      if (!res.ok) {
+        addToast(`Download failed: ${res.statusText}`, 'error');
+        return;
+      }
+      const blob = await res.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.download = file.name;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(downloadUrl);
+    } catch {
+      addToast('Error during file download', 'error');
     }
   };
 
@@ -294,9 +316,7 @@ export const FileExplorer: React.FC = () => {
                     <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem' }}>
                       {!file.is_dir && (
                         <button
-                          onClick={() => {
-                            window.open(`/api/files/download?path=${encodeURIComponent(file.path)}`, '_blank');
-                          }}
+                          onClick={() => handleDownload(file)}
                           className="btn-text"
                           title="Download"
                           style={{ padding: '0.3rem 0.5rem', color: 'var(--text-secondary)' }}

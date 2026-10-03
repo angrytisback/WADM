@@ -1,4 +1,4 @@
-use actix_web::{web, HttpResponse, Responder};
+use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use argon2::{
     password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
@@ -6,28 +6,87 @@ use argon2::{
 use chrono::{Duration, Utc};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::sync::Mutex;
+use std::time::{Duration as StdDuration, Instant};
 use totp_rs::{Algorithm, Secret, TOTP};
 
 const AUTH_FILE: &str = "wadm-auth.json";
 use once_cell::sync::Lazy;
 
+pub fn get_data_dir() -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("WADM_DATA_DIR") {
+        let p = std::path::PathBuf::from(dir);
+        if p.exists() || fs::create_dir_all(&p).is_ok() {
+            return p;
+        }
+    }
+    std::env::current_dir().unwrap_or_default()
+}
+
 pub static JWT_SECRET: Lazy<Vec<u8>> = Lazy::new(|| {
-    let path = std::env::current_dir()
-        .unwrap_or_default()
-        .join(".wadm_jwt_secret");
+    let path = get_data_dir().join(".wadm_jwt_secret");
     if path.exists() {
         if let Ok(content) = fs::read(&path) {
             return content;
         }
     }
+    use rand::rngs::OsRng;
     use rand::RngCore;
     let mut key = vec![0u8; 32];
-    rand::thread_rng().fill_bytes(&mut key);
+    OsRng.fill_bytes(&mut key);
     let _ = fs::write(&path, &key);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+    }
     key
 });
+
+pub struct LoginRateLimiter {
+    attempts: Mutex<HashMap<String, Vec<Instant>>>,
+}
+
+impl LoginRateLimiter {
+    pub fn new() -> Self {
+        Self {
+            attempts: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn is_rate_limited(&self, ip: &str) -> bool {
+        let mut attempts = self.attempts.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        let window = StdDuration::from_secs(60);
+
+        // Periodically prune expired IP records to prevent unbounded memory growth
+        if attempts.len() > 50 {
+            attempts.retain(|_, v| {
+                v.retain(|&t| now.duration_since(t) < window);
+                !v.is_empty()
+            });
+        }
+
+        let entry = attempts.entry(ip.to_string()).or_default();
+        entry.retain(|&t| now.duration_since(t) < window);
+
+        if entry.len() >= 5 {
+            true
+        } else {
+            entry.push(now);
+            false
+        }
+    }
+
+    pub fn reset(&self, ip: &str) {
+        let mut attempts = self.attempts.lock().unwrap_or_else(|e| e.into_inner());
+        attempts.remove(ip);
+    }
+}
+
+pub static LOGIN_RATE_LIMITER: Lazy<LoginRateLimiter> = Lazy::new(LoginRateLimiter::new);
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct AuthStore {
@@ -75,6 +134,13 @@ struct AuthStatus {
 fn get_auth_file_path() -> std::path::PathBuf {
     let filename = AUTH_FILE;
 
+    // 0. Try explicitly configured data directory
+    if let Ok(dir) = std::env::var("WADM_DATA_DIR") {
+        let p = std::path::PathBuf::from(dir);
+        let _ = fs::create_dir_all(&p);
+        return p.join(filename);
+    }
+
     // 1. Try current working directory
     let cwd_path = std::env::current_dir().unwrap_or_default().join(filename);
     if cwd_path.exists() {
@@ -90,10 +156,6 @@ fn get_auth_file_path() -> std::path::PathBuf {
                 log::info!("Found auth file in executable dir: {:?}", exe_dir_path);
                 return exe_dir_path;
             }
-            // If neither exists, we will prefer writing to the executable dir (or CWD as fallback)
-            // But for cleaner logic, let's default to CWD if we are in dev/cargo run,
-            // and Executable Dir if we are in release (heuristic).
-            // Actually, defaulting to Executable Dir is safer for system services.
             log::info!(
                 "Auth file not found. Defaulting path to executable dir: {:?}",
                 exe_dir_path
@@ -119,9 +181,11 @@ pub fn load_auth_store() -> Option<AuthStore> {
                 Some(store)
             }
             Err(e) => {
-                log::error!("CRITICAL: Failed to parse auth store: {}", e);
-                // In production, maybe don't panic? But here security is key.
-                panic!("Auth store corrupted. Manual intervention required.");
+                log::error!(
+                    "CRITICAL: Failed to parse auth store: {}. Setup required / recovery mode.",
+                    e
+                );
+                None
             }
         },
         Err(e) => {
@@ -132,36 +196,61 @@ pub fn load_auth_store() -> Option<AuthStore> {
                 );
                 None
             } else {
-                log::error!("CRITICAL: Failed to read auth store file: {}", e);
-                // If permission denied, we should probably panic or fail hard
-                panic!("Failed to access auth store: {}", e);
+                log::error!(
+                    "CRITICAL: Failed to read auth store file: {}. Setup required / recovery mode.",
+                    e
+                );
+                None
             }
         }
     }
 }
 
 pub async fn get_auth_status(data: web::Data<Mutex<Option<AuthStore>>>) -> impl Responder {
-    let store = data.lock().unwrap();
+    let store = data.lock().unwrap_or_else(|e| e.into_inner());
 
     HttpResponse::Ok().json(AuthStatus {
         setup_required: store.is_none(),
     })
 }
 
-pub async fn init_setup() -> impl Responder {
+pub async fn init_setup(data: web::Data<Mutex<Option<AuthStore>>>) -> impl Responder {
+    let store_guard = data.lock().unwrap_or_else(|e| e.into_inner());
+    if store_guard.is_some() {
+        return HttpResponse::BadRequest().json("Setup already complete");
+    }
+
     let secret = Secret::generate_secret();
-    let totp = TOTP::new(
-        Algorithm::SHA1,
+    let secret_bytes = match secret.to_bytes() {
+        Ok(b) => b,
+        Err(_) => {
+            return HttpResponse::InternalServerError().json("Failed to generate secret bytes")
+        }
+    };
+
+    let totp = match TOTP::new(
+        Algorithm::SHA256,
         6,
         1,
         30,
-        secret.to_bytes().unwrap(),
+        secret_bytes,
         Some("WADM".to_string()),
         "admin@wadm".to_string(),
-    )
-    .unwrap();
+    ) {
+        Ok(t) => t,
+        Err(e) => {
+            log::error!("Failed to create TOTP instance: {}", e);
+            return HttpResponse::InternalServerError().json("Failed to create TOTP instance");
+        }
+    };
 
-    let qr = totp.get_qr_base64().unwrap();
+    let qr = match totp.get_qr_base64() {
+        Ok(q) => q,
+        Err(e) => {
+            log::error!("Failed to generate QR code: {}", e);
+            return HttpResponse::InternalServerError().json("Failed to generate QR code");
+        }
+    };
 
     HttpResponse::Ok().json(SetupInitResponse {
         secret: secret.to_encoded().to_string(),
@@ -173,7 +262,7 @@ pub async fn confirm_setup(
     body: web::Json<SetupRequest>,
     data: web::Data<Mutex<Option<AuthStore>>>,
 ) -> impl Responder {
-    let mut store_guard = data.lock().unwrap();
+    let mut store_guard = data.lock().unwrap_or_else(|e| e.into_inner());
 
     if store_guard.is_some() {
         return HttpResponse::BadRequest().json("Setup already complete");
@@ -184,7 +273,20 @@ pub async fn confirm_setup(
         Err(_) => return HttpResponse::BadRequest().json("Invalid secret format"),
     };
 
-    let totp = match TOTP::new(
+    // Try SHA256 first, fallback to SHA1
+    let valid_code = if let Ok(totp) = TOTP::new(
+        Algorithm::SHA256,
+        6,
+        1,
+        30,
+        secret_bytes.clone(),
+        None,
+        "".to_string(),
+    ) {
+        totp.check_current(&body.code).unwrap_or(false)
+    } else {
+        false
+    } || if let Ok(totp) = TOTP::new(
         Algorithm::SHA1,
         6,
         1,
@@ -193,23 +295,24 @@ pub async fn confirm_setup(
         None,
         "".to_string(),
     ) {
-        Ok(t) => t,
-        Err(e) => {
-            log::error!("Failed to create TOTP instance: {}", e);
-            return HttpResponse::InternalServerError().json("Failed to initialize TOTP");
-        }
+        totp.check_current(&body.code).unwrap_or(false)
+    } else {
+        false
     };
 
-    if !totp.check_current(&body.code).unwrap_or(false) {
+    if !valid_code {
         return HttpResponse::BadRequest().json("Invalid 2FA code");
     }
 
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();
-    let password_hash = argon2
-        .hash_password(body.password.as_bytes(), &salt)
-        .unwrap()
-        .to_string();
+    let password_hash = match argon2.hash_password(body.password.as_bytes(), &salt) {
+        Ok(h) => h.to_string(),
+        Err(e) => {
+            log::error!("Password hashing failed: {}", e);
+            return HttpResponse::InternalServerError().json("Password hashing failed");
+        }
+    };
 
     let new_store = AuthStore {
         password_hash,
@@ -224,6 +327,11 @@ pub async fn confirm_setup(
                 log::error!("CRITICAL: Failed to write auth file to {:?}: {}", path, e);
                 return HttpResponse::InternalServerError().json("Failed to save auth state");
             } else {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+                }
                 log::info!("Successfully persisted auth state to {:?}", path);
             }
         }
@@ -237,7 +345,7 @@ pub async fn confirm_setup(
 
     let role = "admin";
     let expiration = Utc::now()
-        .checked_add_signed(Duration::days(1))
+        .checked_add_signed(Duration::hours(2))
         .expect("valid timestamp")
         .timestamp();
 
@@ -252,23 +360,43 @@ pub async fn confirm_setup(
         &claims,
         &EncodingKey::from_secret(JWT_SECRET.as_slice()),
     )
-    .unwrap();
+    .unwrap_or_default();
 
     HttpResponse::Ok().json(LoginResponse { token })
 }
 
 pub async fn login(
+    req: HttpRequest,
     body: web::Json<LoginRequest>,
     data: web::Data<Mutex<Option<AuthStore>>>,
 ) -> impl Responder {
-    let store_guard = data.lock().unwrap();
+    let client_ip = req
+        .connection_info()
+        .realip_remote_addr()
+        .unwrap_or("unknown")
+        .to_string();
+
+    if LOGIN_RATE_LIMITER.is_rate_limited(&client_ip) {
+        log::warn!(
+            "Rate limit exceeded for login attempts from IP: {}",
+            client_ip
+        );
+        return HttpResponse::TooManyRequests()
+            .json("Too many login attempts. Please wait 1 minute.");
+    }
+
+    let store_guard = data.lock().unwrap_or_else(|e| e.into_inner());
 
     let store = match &*store_guard {
         Some(s) => s,
         None => return HttpResponse::BadRequest().json("Setup required"),
     };
 
-    let parsed_hash = PasswordHash::new(&store.password_hash).unwrap();
+    let parsed_hash = match PasswordHash::new(&store.password_hash) {
+        Ok(h) => h,
+        Err(_) => return HttpResponse::InternalServerError().json("Invalid stored hash"),
+    };
+
     if Argon2::default()
         .verify_password(body.password.as_bytes(), &parsed_hash)
         .is_err()
@@ -276,10 +404,25 @@ pub async fn login(
         return HttpResponse::Unauthorized().json("Invalid credentials");
     }
 
-    let secret_bytes = Secret::Encoded(store.totp_secret.clone())
-        .to_bytes()
-        .unwrap();
-    let totp = match TOTP::new(
+    let secret_bytes = match Secret::Encoded(store.totp_secret.clone()).to_bytes() {
+        Ok(b) => b,
+        Err(_) => return HttpResponse::InternalServerError().json("Invalid secret format"),
+    };
+
+    // Check SHA256 first, then SHA1 for backward compatibility
+    let valid_2fa = if let Ok(totp) = TOTP::new(
+        Algorithm::SHA256,
+        6,
+        1,
+        30,
+        secret_bytes.clone(),
+        None,
+        "".to_string(),
+    ) {
+        totp.check_current(&body.code).unwrap_or(false)
+    } else {
+        false
+    } || if let Ok(totp) = TOTP::new(
         Algorithm::SHA1,
         6,
         1,
@@ -288,19 +431,20 @@ pub async fn login(
         None,
         "".to_string(),
     ) {
-        Ok(t) => t,
-        Err(e) => {
-            log::error!("Failed to create TOTP instance during login: {}", e);
-            return HttpResponse::InternalServerError().json("Failed to verify TOTP");
-        }
+        totp.check_current(&body.code).unwrap_or(false)
+    } else {
+        false
     };
 
-    if !totp.check_current(&body.code).unwrap_or(false) {
+    if !valid_2fa {
         return HttpResponse::Unauthorized().json("Invalid 2FA code");
     }
 
+    // Login successful: reset rate limiter
+    LOGIN_RATE_LIMITER.reset(&client_ip);
+
     let expiration = Utc::now()
-        .checked_add_signed(Duration::days(1))
+        .checked_add_signed(Duration::hours(2))
         .expect("valid timestamp")
         .timestamp();
 
@@ -315,7 +459,37 @@ pub async fn login(
         &claims,
         &EncodingKey::from_secret(JWT_SECRET.as_slice()),
     )
-    .unwrap();
+    .unwrap_or_default();
 
     HttpResponse::Ok().json(LoginResponse { token })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_jwt_secret_generation() {
+        let secret = JWT_SECRET.as_slice();
+        assert_eq!(secret.len(), 32);
+        assert!(!secret.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_login_rate_limiter() {
+        let limiter = LoginRateLimiter::new();
+        let test_ip = "192.0.2.1";
+
+        // First 5 attempts should not be rate limited
+        for _ in 0..5 {
+            assert!(!limiter.is_rate_limited(test_ip));
+        }
+
+        // 6th attempt should be rate limited
+        assert!(limiter.is_rate_limited(test_ip));
+
+        // After reset, should allow again
+        limiter.reset(test_ip);
+        assert!(!limiter.is_rate_limited(test_ip));
+    }
 }

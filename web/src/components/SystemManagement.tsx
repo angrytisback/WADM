@@ -218,9 +218,9 @@ const SystemManagement: React.FC = () => {
         } else {
           addToast(data, 'error');
         }
-      } catch (e: any) {
+      } catch (e: unknown) {
         addToast('Failed to schedule power action', 'error');
-        addLog('Power Action: schedule', e.toString(), 'error');
+        addLog('Power Action: schedule', String(e), 'error');
       } finally {
         setIsPowerActionLoading(false);
       }
@@ -251,9 +251,9 @@ const SystemManagement: React.FC = () => {
         } else {
           addToast(data, 'error');
         }
-      } catch (e: any) {
+      } catch (e: unknown) {
         addToast('Failed to cancel power action', 'error');
-        addLog('Power Action: cancel', e.toString(), 'error');
+        addLog('Power Action: cancel', String(e), 'error');
       } finally {
         setIsPowerActionLoading(false);
       }
@@ -283,9 +283,9 @@ const SystemManagement: React.FC = () => {
         addToast(errMsg, 'error');
         addLog(`Maintenance: ${action}`, errDetails, 'error');
       }
-    } catch (e: any) {
+    } catch (e: unknown) {
       addToast('Operation failed', 'error');
-      addLog(`Maintenance: ${action}`, e.toString(), 'error');
+      addLog(`Maintenance: ${action}`, String(e), 'error');
     } finally {
       setIsLoading(false);
     }
@@ -304,9 +304,9 @@ const SystemManagement: React.FC = () => {
         addToast(data, 'error');
         addLog(`DNS: flush`, data, 'error');
       }
-    } catch (e: any) {
+    } catch (e: unknown) {
       addToast('DNS flush failed', 'error');
-      addLog(`DNS: flush`, e.toString(), 'error');
+      addLog(`DNS: flush`, String(e), 'error');
     }
   };
 

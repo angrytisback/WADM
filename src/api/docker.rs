@@ -89,7 +89,8 @@ pub async fn get_container_stats(id: web::Path<String>) -> impl Responder {
         one_shot: true,
     });
 
-    match docker.stats(&id.into_inner(), options).try_next().await {
+    let container_id = id.into_inner();
+    match docker.stats(&container_id, options).try_next().await {
         Ok(Some(stats)) => {
             let cpu_stats = stats.cpu_stats;
             let precpu_stats = stats.precpu_stats;
@@ -133,7 +134,7 @@ pub async fn get_container_stats(id: web::Path<String>) -> impl Responder {
                 .unwrap_or(0);
 
             HttpResponse::Ok().json(ContainerStats {
-                id: "".to_string(),
+                id: container_id,
                 cpu_usage: cpu_percent,
                 memory_usage,
             })

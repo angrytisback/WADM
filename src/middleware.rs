@@ -53,7 +53,6 @@ where
             || path == "/api/auth/setup/init"
             || path == "/api/auth/setup/confirm"
             || path == "/api/health"
-            || path == "/api/terminal/ws"
         {
             let fut = self.service.call(req);
             return Box::pin(async move {
@@ -62,17 +61,43 @@ where
             });
         }
 
-        let auth_header = req.headers().get("Authorization");
-        let token = match auth_header {
-            Some(value) => {
-                let parts: Vec<&str> = value.to_str().unwrap_or("").split_whitespace().collect();
-                if parts.len() == 2 && parts[0] == "Bearer" {
-                    parts[1]
-                } else {
-                    ""
-                }
+        let token_from_header = req.headers().get("Authorization").and_then(|value| {
+            let parts: Vec<&str> = value.to_str().unwrap_or("").split_whitespace().collect();
+            if parts.len() == 2 && parts[0] == "Bearer" {
+                Some(parts[1].to_string())
+            } else {
+                None
             }
-            None => "",
+        });
+
+        let token = if let Some(t) = token_from_header {
+            t
+        } else if path == "/api/terminal/ws" {
+            // Check Sec-WebSocket-Protocol first
+            if let Some(proto) = req.headers().get("Sec-WebSocket-Protocol") {
+                let p = proto.to_str().unwrap_or("").trim().to_string();
+                if !p.is_empty() {
+                    p
+                } else {
+                    String::new()
+                }
+            } else {
+                // Fallback to query string
+                let query = req.query_string();
+                let mut found = String::new();
+                for pair in query.split('&') {
+                    let mut kv = pair.split('=');
+                    if let (Some(k), Some(v)) = (kv.next(), kv.next()) {
+                        if k == "token" {
+                            found = v.to_string();
+                            break;
+                        }
+                    }
+                }
+                found
+            }
+        } else {
+            String::new()
         };
 
         if token.is_empty() {
@@ -85,7 +110,7 @@ where
         let secret = crate::api::auth::JWT_SECRET.as_slice();
 
         match decode::<Claims>(
-            token,
+            &token,
             &DecodingKey::from_secret(secret),
             &Validation::new(Algorithm::HS256),
         ) {

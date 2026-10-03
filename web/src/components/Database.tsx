@@ -101,7 +101,7 @@ export default function Database() {
                     const tables = await res.json();
                     setTablesMap(prev => ({ ...prev, [id]: tables }));
                 }
-            } catch (err) {
+            } catch {
                 addToast(`Failed to load tables for ${db.name}`, "error");
             } finally {
                 setLoadingTables(prev => ({ ...prev, [id]: false }));

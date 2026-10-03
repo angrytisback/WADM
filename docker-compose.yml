@@ -1,0 +1,33 @@
+# WADM Production Deployment
+# Run: docker compose up -d
+# Access: http://<host-ip>:8080
+
+services:
+  wadm:
+    image: ghcr.io/angrytisback/wadm:latest
+    container_name: wadm
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      # Docker socket: required for container management and App Store deployments
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Kernel interfaces: required for system metrics (procfs / sysfs)
+      - /proc:/proc:ro
+      - /sys:/sys:ro
+      # Persistent WADM data: auth store, JWT secret, and app credential files
+      - wadm_data:/opt/wadm/data
+    environment:
+      - RUST_LOG=info
+    # Do not run as root inside the container.
+    # The image creates user/group wadm (uid=100, gid=101 on Alpine).
+    user: "100:101"
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+
+volumes:
+  wadm_data:
+    driver: local

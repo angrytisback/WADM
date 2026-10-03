@@ -51,7 +51,7 @@ export function DependencyModal() {
             } else {
                 addToast(`Failed to install ${depName}`, "error");
             }
-        } catch (e) {
+        } catch {
             addToast(`Error installing ${depName}`, "error");
         } finally {
             setInstalling(null);
@@ -78,7 +78,7 @@ export function DependencyModal() {
                 </p>
 
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                    {missing.map((dep: any, idx: number) => (
+                    {missing.map((dep, idx) => (
                         <div key={idx} style={{
                             padding: '1.2rem',
                             background: 'var(--glass-bg)',

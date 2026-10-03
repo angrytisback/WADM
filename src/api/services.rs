@@ -166,3 +166,26 @@ pub async fn get_service_logs(path: web::Path<String>) -> impl Responder {
         Err(_) => HttpResponse::InternalServerError().json("Failed to fetch logs"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_service_names() {
+        assert!(is_valid_service_name("docker.service"));
+        assert!(is_valid_service_name("nginx"));
+        assert!(is_valid_service_name("user@1000.service"));
+        assert!(is_valid_service_name("systemd-resolved.service"));
+    }
+
+    #[test]
+    fn test_invalid_service_names_injection() {
+        assert!(!is_valid_service_name(""));
+        assert!(!is_valid_service_name("-oAPT"));
+        assert!(!is_valid_service_name("--now"));
+        assert!(!is_valid_service_name("docker.service; rm -rf /"));
+        assert!(!is_valid_service_name("docker $(whoami)"));
+        assert!(!is_valid_service_name("service name"));
+    }
+}

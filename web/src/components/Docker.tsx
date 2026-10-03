@@ -89,7 +89,7 @@ export default function Docker() {
                             };
                         }
                     } catch {
-
+                        // Ignore stats fetch failure for stopped or transitioning containers
                     }
                 }));
 

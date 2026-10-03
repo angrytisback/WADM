@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security Vulnerability
+    url: https://github.com/angrytisback/WADM/security/advisories/new
+    about: Report a security vulnerability through private disclosure. Do not open a public issue.
+  - name: General Discussion
+    url: https://github.com/angrytisback/WADM/discussions
+    about: Ask a question or discuss ideas before opening a feature request.

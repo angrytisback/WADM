@@ -13,7 +13,7 @@ use crate::api::config::AppConfig;
 
 #[derive(serde::Deserialize)]
 pub struct WsQuery {
-    token: String,
+    token: Option<String>,
 }
 
 pub async fn ws_terminal(
@@ -22,14 +22,24 @@ pub async fn ws_terminal(
     config_data: web::Data<Mutex<AppConfig>>,
     query: web::Query<WsQuery>,
 ) -> Result<HttpResponse, Error> {
-    let token = &query.token;
+    let token = if let Some(proto) = req.headers().get("Sec-WebSocket-Protocol") {
+        let p = proto.to_str().unwrap_or("").trim().to_string();
+        if !p.is_empty() {
+            p
+        } else {
+            query.token.clone().unwrap_or_default()
+        }
+    } else {
+        query.token.clone().unwrap_or_default()
+    };
+
     if token.is_empty() {
         return Ok(HttpResponse::Unauthorized().body("Missing token"));
     }
 
     let validation = Validation::new(Algorithm::HS256);
     let _claims = match decode::<Claims>(
-        token,
+        &token,
         &DecodingKey::from_secret(JWT_SECRET.as_slice()),
         &validation,
     ) {
@@ -38,7 +48,7 @@ pub async fn ws_terminal(
     };
 
     {
-        let config = config_data.lock().unwrap();
+        let config = config_data.lock().unwrap_or_else(|e| e.into_inner());
         if !config.developer_mode {
             log::warn!("Attempted terminal access without Developer Mode enabled.");
             return Ok(HttpResponse::Forbidden().body("Developer Mode is disabled"));
@@ -54,25 +64,57 @@ pub async fn ws_terminal(
     actix_web::rt::spawn(async move {
         let pty_system = NativePtySystem::default();
 
-        let pair = pty_system
-            .openpty(PtySize {
-                rows: 24,
-                cols: 80,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .expect("Failed to create PTY");
+        let pair = match pty_system.openpty(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        }) {
+            Ok(p) => p,
+            Err(e) => {
+                log::error!("Failed to create PTY: {}", e);
+                let _ = session
+                    .text("\r\n\x1b[31mError: Failed to allocate pseudo-terminal\x1b[0m\r\n")
+                    .await;
+                let _ = session.close(None).await;
+                return;
+            }
+        };
 
-        let cmd = CommandBuilder::new("bash");
-        let _child = pair
-            .slave
-            .spawn_command(cmd)
-            .expect("Failed to spawn shell");
+        let shell = if std::path::Path::new("/bin/bash").exists()
+            || std::path::Path::new("/usr/bin/bash").exists()
+        {
+            "bash"
+        } else {
+            "sh"
+        };
+        let cmd = CommandBuilder::new(shell);
+        let mut child = match pair.slave.spawn_command(cmd) {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("Failed to spawn shell: {}", e);
+                let _ = session
+                    .text("\r\n\x1b[31mError: Failed to spawn shell process\x1b[0m\r\n")
+                    .await;
+                let _ = session.close(None).await;
+                return;
+            }
+        };
 
-        let mut reader = pair
-            .master
-            .try_clone_reader()
-            .expect("Failed to clone reader");
+        let mut reader = match pair.master.try_clone_reader() {
+            Ok(r) => r,
+            Err(e) => {
+                log::error!("Failed to clone PTY reader: {}", e);
+                let _ = session
+                    .text("\r\n\x1b[31mError: Failed to initialize terminal reader\x1b[0m\r\n")
+                    .await;
+                let _ = session.close(None).await;
+                let _ = child.kill();
+                let _ = child.wait();
+                return;
+            }
+        };
+
         let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
 
         thread::spawn(move || {
@@ -89,7 +131,19 @@ pub async fn ws_terminal(
             }
         });
 
-        let mut writer = pair.master.take_writer().expect("Failed to take writer");
+        let mut writer = match pair.master.take_writer() {
+            Ok(w) => w,
+            Err(e) => {
+                log::error!("Failed to take PTY writer: {}", e);
+                let _ = session
+                    .text("\r\n\x1b[31mError: Failed to initialize terminal writer\x1b[0m\r\n")
+                    .await;
+                let _ = session.close(None).await;
+                let _ = child.kill();
+                let _ = child.wait();
+                return;
+            }
+        };
 
         loop {
             tokio::select! {
@@ -138,6 +192,10 @@ pub async fn ws_terminal(
                 else => break,
             }
         }
+
+        // Clean up child process to prevent zombie/orphan processes
+        let _ = child.kill();
+        let _ = child.wait();
     });
 
     Ok(res)

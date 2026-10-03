@@ -33,7 +33,7 @@ export function DependencyWarning() {
                     </div>
 
                     <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
-                        {missing.map((dep: any, idx: number) => (
+                        {missing.map((dep, idx) => (
                             <div key={idx} style={{ marginBottom: '1rem', paddingBottom: '1rem', borderBottom: idx < missing.length - 1 ? '1px solid var(--glass-border)' : 'none' }}>
                                 <div style={{ fontWeight: 500, marginBottom: '0.25rem' }}>{dep.name}</div>
                                 <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>

@@ -190,7 +190,7 @@ export default function SystemUsage() {
                     const procData = await procRes.json();
                     setProcesses(procData);
                 }
-            } catch (e) {
+            } catch {
                 // ignore
             }
         };

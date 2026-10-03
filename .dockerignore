@@ -1,0 +1,30 @@
+# Rust build artifacts
+target/
+
+# Node / frontend build artifacts
+web/node_modules/
+web/dist/
+
+# Version control
+.git/
+.gitignore
+
+# Runtime secrets and local auth state
+.wadm_jwt_secret
+wadm-auth.json
+credentials.txt
+.env
+.env.*
+
+# Development tooling
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Documentation and non-runtime assets
+docs/
+dotfiles/
+assets/screenshots/
+*.md
+!README.md

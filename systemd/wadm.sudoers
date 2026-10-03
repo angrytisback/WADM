@@ -1,0 +1,72 @@
+# /etc/sudoers.d/wadm
+#
+# Least-privilege sudoers drop-in for the WADM service user.
+# This file grants the 'wadm' service account NOPASSWD execution rights
+# for a strictly bounded set of host binaries required for panel functionality.
+#
+# Install location: /etc/sudoers.d/wadm
+# Install command:  install -m 0440 systemd/wadm.sudoers /etc/sudoers.d/wadm
+# Validate with:    visudo -cf /etc/sudoers.d/wadm
+#
+# Do NOT use NOPASSWD ALL. Each command is listed explicitly with arguments
+# where possible to reduce the attack surface.
+
+Defaults:wadm !requiretty
+
+# System service control (start, stop, restart, enable, disable)
+wadm ALL=(root) NOPASSWD: /bin/systemctl start *, /usr/bin/systemctl start *
+wadm ALL=(root) NOPASSWD: /bin/systemctl stop *, /usr/bin/systemctl stop *
+wadm ALL=(root) NOPASSWD: /bin/systemctl restart *, /usr/bin/systemctl restart *
+wadm ALL=(root) NOPASSWD: /bin/systemctl enable *, /usr/bin/systemctl enable *
+wadm ALL=(root) NOPASSWD: /bin/systemctl disable *, /usr/bin/systemctl disable *
+wadm ALL=(root) NOPASSWD: /bin/systemctl status *, /usr/bin/systemctl status *
+wadm ALL=(root) NOPASSWD: /bin/systemctl list-units *, /usr/bin/systemctl list-units *
+wadm ALL=(root) NOPASSWD: /bin/systemctl daemon-reload, /usr/bin/systemctl daemon-reload
+
+# Journal logs (service logs and maintenance vacuum)
+wadm ALL=(root) NOPASSWD: /bin/journalctl *, /usr/bin/journalctl *
+
+# Process signal delivery (SIGTERM and SIGKILL via kill)
+# The WADM backend enforces PID 1 and self-PID protection at the API layer.
+wadm ALL=(root) NOPASSWD: /bin/kill -15 *, /usr/bin/kill -15 *
+wadm ALL=(root) NOPASSWD: /bin/kill -9 *, /usr/bin/kill -9 *
+
+# Docker Compose application deployments (App Store)
+wadm ALL=(root) NOPASSWD: /usr/bin/docker-compose *
+wadm ALL=(root) NOPASSWD: /usr/bin/docker compose *
+
+# UFW firewall management
+wadm ALL=(root) NOPASSWD: /usr/sbin/ufw status *, /sbin/ufw status *
+wadm ALL=(root) NOPASSWD: /usr/sbin/ufw allow *, /sbin/ufw allow *
+wadm ALL=(root) NOPASSWD: /usr/sbin/ufw delete *, /sbin/ufw delete *
+
+# S.M.A.R.T. disk health queries (read-only, no disk modification)
+wadm ALL=(root) NOPASSWD: /usr/sbin/smartctl -a *, /sbin/smartctl -a *
+wadm ALL=(root) NOPASSWD: /usr/sbin/smartctl --json=c -a *, /sbin/smartctl --json=c -a *
+
+# Periodic filesystem TRIM (SSD maintenance)
+wadm ALL=(root) NOPASSWD: /sbin/fstrim *, /usr/sbin/fstrim *
+
+# Memory & cache tuning (write_kernel_tunable and swap management)
+wadm ALL=(root) NOPASSWD: /usr/bin/tee /proc/sys/vm/drop_caches, /bin/tee /proc/sys/vm/drop_caches
+wadm ALL=(root) NOPASSWD: /usr/bin/tee /proc/sys/vm/compact_memory, /bin/tee /proc/sys/vm/compact_memory
+wadm ALL=(root) NOPASSWD: /sbin/swapoff -a, /usr/sbin/swapoff -a
+wadm ALL=(root) NOPASSWD: /sbin/swapon -a, /usr/sbin/swapon -a
+
+# System power management
+wadm ALL=(root) NOPASSWD: /bin/systemctl reboot, /usr/bin/systemctl reboot
+wadm ALL=(root) NOPASSWD: /bin/systemctl poweroff, /usr/bin/systemctl poweroff
+wadm ALL=(root) NOPASSWD: /sbin/shutdown *, /usr/sbin/shutdown *, /bin/shutdown *
+wadm ALL=(root) NOPASSWD: /sbin/reboot, /usr/sbin/reboot, /bin/reboot
+
+# Package manager operations (controlled package management)
+wadm ALL=(root) NOPASSWD: /usr/bin/apt-get update, /usr/bin/apt-get -y install *, /usr/bin/apt-get -y upgrade, /usr/bin/apt-get -y remove *, /usr/bin/apt-get clean, /usr/bin/apt-get autoclean
+wadm ALL=(root) NOPASSWD: /usr/bin/dnf check-update, /usr/bin/dnf -y install *, /usr/bin/dnf -y upgrade, /usr/bin/dnf -y remove *, /usr/bin/dnf clean all
+wadm ALL=(root) NOPASSWD: /usr/bin/pacman -Sy, /usr/bin/pacman -S --noconfirm *, /usr/bin/pacman -Syu --noconfirm, /usr/bin/pacman -R --noconfirm *, /usr/bin/pacman -Sc --noconfirm
+
+# DNS resolver diagnostics
+wadm ALL=(root) NOPASSWD: /usr/bin/resolvectl statistics, /usr/bin/systemd-resolve --statistics
+
+# Local database operations (when running as unprivileged user postgres)
+wadm ALL=(postgres) NOPASSWD: /usr/bin/psql *
+wadm ALL=(postgres) NOPASSWD: /usr/bin/pg_dump *

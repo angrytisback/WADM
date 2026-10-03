@@ -2,6 +2,7 @@ use actix_web::{HttpResponse, Responder};
 use chrono::Local;
 use log::{Level, Metadata, Record};
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::sync::Mutex;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -12,14 +13,14 @@ pub struct LogEntry {
 }
 
 pub struct LogStore {
-    pub entries: Mutex<Vec<LogEntry>>,
+    pub entries: Mutex<VecDeque<LogEntry>>,
     pub max_entries: usize,
 }
 
 impl LogStore {
     pub fn new(max_entries: usize) -> Self {
         Self {
-            entries: Mutex::new(Vec::with_capacity(max_entries)),
+            entries: Mutex::new(VecDeque::with_capacity(max_entries)),
             max_entries,
         }
     }
@@ -29,11 +30,11 @@ impl LogStore {
             return;
         }
 
-        let mut entries = self.entries.lock().unwrap();
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         if entries.len() >= self.max_entries {
-            entries.remove(0);
+            entries.pop_front();
         }
-        entries.push(LogEntry {
+        entries.push_back(LogEntry {
             timestamp: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             level,
             message,
@@ -96,12 +97,12 @@ pub fn init() {
 }
 
 pub async fn get_logs() -> impl Responder {
-    let entries = LOG_STORE.entries.lock().unwrap();
+    let entries = LOG_STORE.entries.lock().unwrap_or_else(|e| e.into_inner());
     HttpResponse::Ok().json(&*entries)
 }
 
 pub async fn clear_logs() -> impl Responder {
-    let mut entries = LOG_STORE.entries.lock().unwrap();
+    let mut entries = LOG_STORE.entries.lock().unwrap_or_else(|e| e.into_inner());
     entries.clear();
     HttpResponse::Ok().json("Logs cleared")
 }

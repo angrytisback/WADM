@@ -1,8 +1,10 @@
 use actix_web::{web, HttpResponse, Responder};
+use once_cell::sync::Lazy;
 use serde::Serialize;
 use serde_json;
 use std::process::Command;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use sysinfo::{Components, Disks, Networks, ProcessesToUpdate, System};
 
 #[derive(Serialize)]
@@ -434,16 +436,44 @@ pub fn get_gpu_stats() -> Vec<GpuStats> {
     gpus
 }
 
-fn get_default_interface() -> String {
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg("ip route | grep default | awk '{print $5}' | head -n1")
-        .output();
+static SERVICES_CACHE: Lazy<Mutex<(u32, u32, Instant)>> =
+    Lazy::new(|| Mutex::new((0, 0, Instant::now() - Duration::from_secs(3600))));
 
-    match output {
-        Ok(o) => String::from_utf8_lossy(&o.stdout).trim().to_string(),
-        Err(_) => String::new(),
+static CONTAINERS_CACHE: Lazy<Mutex<(u32, Instant)>> =
+    Lazy::new(|| Mutex::new((0, Instant::now() - Duration::from_secs(3600))));
+
+pub fn parse_route_table(content: &str) -> Option<String> {
+    for line in content.lines().skip(1) {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() >= 2 && fields[1] == "00000000" {
+            return Some(fields[0].to_string());
+        }
     }
+    None
+}
+
+fn get_default_interface() -> String {
+    // 1. Direct Linux kernel /proc/net/route parser (zero subprocess overhead)
+    if let Ok(content) = std::fs::read_to_string("/proc/net/route") {
+        if let Some(iface) = parse_route_table(&content) {
+            return iface;
+        }
+    }
+
+    // 2. Direct fallback without subshell pipeline
+    if let Ok(o) = Command::new("ip")
+        .args(["route", "show", "default"])
+        .output()
+    {
+        let stdout = String::from_utf8_lossy(&o.stdout);
+        let parts: Vec<&str> = stdout.split_whitespace().collect();
+        if let Some(pos) = parts.iter().position(|&p| p == "dev") {
+            if let Some(iface) = parts.get(pos + 1) {
+                return iface.to_string();
+            }
+        }
+    }
+    String::new()
 }
 
 fn get_interface_speed(iface: &str) -> u64 {
@@ -481,6 +511,20 @@ fn count_services(state: &str) -> u32 {
     }
 }
 
+fn get_cached_service_counts() -> (u32, u32) {
+    if let Ok(mut cache) = SERVICES_CACHE.lock() {
+        if cache.2.elapsed() < Duration::from_secs(30) {
+            return (cache.0, cache.1);
+        }
+        let running = count_services("running");
+        let failed = count_services("failed");
+        *cache = (running, failed, Instant::now());
+        (running, failed)
+    } else {
+        (count_services("running"), count_services("failed"))
+    }
+}
+
 fn count_containers() -> u32 {
     let output = Command::new("sudo")
         .args(["-n", "docker", "ps", "-q"])
@@ -494,9 +538,22 @@ fn count_containers() -> u32 {
     }
 }
 
+fn get_cached_container_count() -> u32 {
+    if let Ok(mut cache) = CONTAINERS_CACHE.lock() {
+        if cache.1.elapsed() < Duration::from_secs(10) {
+            return cache.0;
+        }
+        let count = count_containers();
+        *cache = (count, Instant::now());
+        count
+    } else {
+        count_containers()
+    }
+}
+
 pub async fn get_system_stats(data: web::Data<AppState>) -> impl Responder {
     let (cpu_usage, ram_total, ram_used, swap_total, swap_used) = {
-        let mut sys = data.sys.lock().unwrap();
+        let mut sys = data.sys.lock().unwrap_or_else(|e| e.into_inner());
         sys.refresh_all();
         (
             sys.global_cpu_usage(),
@@ -519,7 +576,7 @@ pub async fn get_system_stats(data: web::Data<AppState>) -> impl Responder {
     };
 
     let (network_rx, network_tx) = {
-        let mut networks = data.networks.lock().unwrap();
+        let mut networks = data.networks.lock().unwrap_or_else(|e| e.into_inner());
         networks.refresh(true);
         let mut rx = 0;
         let mut tx = 0;
@@ -555,9 +612,8 @@ pub async fn get_system_stats(data: web::Data<AppState>) -> impl Responder {
         network_max_speed,
         gpus,
     ) = actix_web::web::block(move || {
-        let active = count_services("running");
-        let failed = count_services("failed");
-        let containers = count_containers();
+        let (active, failed) = get_cached_service_counts();
+        let containers = get_cached_container_count();
         let pkgs = crate::api::pkgmgr::count_upgradable_packages();
         let iface = get_default_interface();
         let speed = get_interface_speed(&iface);
@@ -599,7 +655,7 @@ pub struct ProcessInfo {
 }
 
 pub async fn get_processes(data: web::Data<AppState>) -> impl Responder {
-    let mut sys = data.sys.lock().unwrap();
+    let mut sys = data.sys.lock().unwrap_or_else(|e| e.into_inner());
     sys.refresh_processes(ProcessesToUpdate::All, true);
     let cpu_count = sys.cpus().len() as f32;
     let mut processes: Vec<ProcessInfo> = sys
@@ -612,7 +668,11 @@ pub async fn get_processes(data: web::Data<AppState>) -> impl Responder {
             memory: process.memory(),
         })
         .collect();
-    processes.sort_by(|a, b| b.cpu_usage.partial_cmp(&a.cpu_usage).unwrap());
+    processes.sort_by(|a, b| {
+        b.cpu_usage
+            .partial_cmp(&a.cpu_usage)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let top_processes: Vec<ProcessInfo> = processes.into_iter().take(50).collect();
     HttpResponse::Ok().json(top_processes)
 }
@@ -625,24 +685,62 @@ pub struct ProcessAction {
 
 pub async fn kill_process(body: web::Json<ProcessAction>) -> impl Responder {
     let pid = body.pid;
+
+    // Protect system init (PID 1) and invalid PIDs
+    if pid <= 1 {
+        return HttpResponse::BadRequest()
+            .json("Terminating system init or invalid PID is forbidden");
+    }
+
+    // Protect WADM server process from killing itself
+    let my_pid = std::process::id() as i32;
+    if pid == my_pid {
+        return HttpResponse::BadRequest().json("Terminating WADM server process is forbidden");
+    }
+
     let signal = match body.signal.as_str() {
         "SIGKILL" => 9,
-        _ => 15,
+        "SIGTERM" => 15,
+        _ => {
+            return HttpResponse::BadRequest()
+                .json("Invalid signal specified (only SIGTERM and SIGKILL are allowed)")
+        }
     };
+
     let output = std::process::Command::new("sudo")
         .args(["-n", "kill", &format!("-{}", signal), &pid.to_string()])
         .output();
+
     match output {
         Ok(o) => {
             if o.status.success() {
                 HttpResponse::Ok().json(format!("Process {} signal {} sent", pid, signal))
             } else {
-                let err = String::from_utf8_lossy(&o.stderr);
-                HttpResponse::InternalServerError().json(format!("Failed to kill process: {}", err))
+                log::warn!("Process kill error: {}", String::from_utf8_lossy(&o.stderr));
+                HttpResponse::InternalServerError().json("Failed to kill process")
             }
         }
         Err(e) => {
-            HttpResponse::InternalServerError().json(format!("Failed to execute kill: {}", e))
+            log::error!("Failed to execute kill: {}", e);
+            HttpResponse::InternalServerError().json("Failed to execute kill command")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_route_table() {
+        let sample =
+            "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT\n\
+eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n\
+eth0\t0001A8C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n";
+        assert_eq!(parse_route_table(sample), Some("eth0".to_string()));
+
+        let no_default = "Iface\tDestination\tGateway\tFlags\n\
+wlan0\t0001A8C0\t00000000\t0001\n";
+        assert_eq!(parse_route_table(no_default), None);
     }
 }

@@ -1,7 +1,19 @@
 use actix_web::{web, HttpResponse, Responder};
 use log::info;
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::process::Command;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+static UPGRADABLE_CACHE: Lazy<Mutex<(u32, Instant)>> =
+    Lazy::new(|| Mutex::new((0, Instant::now() - Duration::from_secs(3600))));
+
+pub fn invalidate_upgradable_cache() {
+    if let Ok(mut cache) = UPGRADABLE_CACHE.lock() {
+        cache.1 = Instant::now() - Duration::from_secs(3600);
+    }
+}
 
 #[derive(Serialize)]
 struct Package {
@@ -20,7 +32,7 @@ struct ErrorResponse {
     error: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManagerType {
     Apt,
     Dnf,
@@ -28,7 +40,7 @@ pub enum ManagerType {
     Unknown,
 }
 
-pub fn detect_manager() -> ManagerType {
+static DETECTED_MANAGER: Lazy<ManagerType> = Lazy::new(|| {
     if Command::new("which")
         .arg("apt-get")
         .output()
@@ -54,6 +66,10 @@ pub fn detect_manager() -> ManagerType {
         return ManagerType::Pacman;
     }
     ManagerType::Unknown
+});
+
+pub fn detect_manager() -> ManagerType {
+    *DETECTED_MANAGER
 }
 
 fn list_packages_pacman() -> Result<Vec<Package>, String> {
@@ -231,6 +247,13 @@ fn install_package_impl(manager: &ManagerType, name: &str) -> Result<String, Str
 }
 
 pub fn count_upgradable_packages() -> u32 {
+    const TTL: Duration = Duration::from_secs(300); // 5-minute cache prevents 2s fork bomb
+    if let Ok(cache) = UPGRADABLE_CACHE.lock() {
+        if cache.1.elapsed() < TTL {
+            return cache.0;
+        }
+    }
+
     let manager = detect_manager();
     let result = match manager {
         ManagerType::Pacman => list_packages_pacman(),
@@ -239,10 +262,16 @@ pub fn count_upgradable_packages() -> u32 {
         ManagerType::Unknown => Ok(Vec::new()),
     };
 
-    match result {
+    let count = match result {
         Ok(pkgs) => pkgs.len() as u32,
         Err(_) => 0,
+    };
+
+    if let Ok(mut cache) = UPGRADABLE_CACHE.lock() {
+        *cache = (count, Instant::now());
     }
+
+    count
 }
 
 pub async fn list_packages() -> impl Responder {
@@ -276,6 +305,7 @@ pub async fn upgrade_package(body: web::Json<PackageAction>) -> impl Responder {
     match upgrade_package_impl(&manager, &body.name) {
         Ok(msg) => {
             log::info!("Upgrade success: {}", msg);
+            invalidate_upgradable_cache();
             HttpResponse::Ok().json(msg)
         }
         Err(e) => {
@@ -291,6 +321,7 @@ pub async fn install_package(body: web::Json<PackageAction>) -> impl Responder {
     match install_package_impl(&manager, &body.name) {
         Ok(msg) => {
             log::info!("Install success: {}", msg);
+            invalidate_upgradable_cache();
             HttpResponse::Ok().json(msg)
         }
         Err(e) => {
@@ -502,6 +533,7 @@ pub async fn update_all_packages() -> impl Responder {
     match update_all_packages_impl(&manager) {
         Ok(msg) => {
             log::info!("Global update success: {}", msg);
+            invalidate_upgradable_cache();
             HttpResponse::Ok().json(msg)
         }
         Err(e) => {
@@ -538,5 +570,29 @@ pub async fn remove_package(body: web::Json<PackageAction>) -> impl Responder {
             log::error!("Remove package failed: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse { error: e })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_package_names() {
+        assert!(is_valid_package_name("nginx"));
+        assert!(is_valid_package_name("curl-7.68.0"));
+        assert!(is_valid_package_name("libssl_dev.1"));
+        assert!(is_valid_package_name("python3"));
+    }
+
+    #[test]
+    fn test_invalid_package_names_injection() {
+        assert!(!is_valid_package_name(""));
+        assert!(!is_valid_package_name("-oAPT::Update=1"));
+        assert!(!is_valid_package_name("--force"));
+        assert!(!is_valid_package_name("nginx; rm -rf /"));
+        assert!(!is_valid_package_name("nginx | bash"));
+        assert!(!is_valid_package_name("package`whoami`"));
+        assert!(!is_valid_package_name("pkg name"));
     }
 }

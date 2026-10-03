@@ -55,8 +55,8 @@ function SystemInfo() {
             if (!res.ok) throw new Error(await res.text());
             const data = await res.json();
             setSpeedResult(data);
-        } catch (err: any) {
-            setSpeedError(err.message || 'Speedtest failed');
+        } catch (err: unknown) {
+            setSpeedError(err instanceof Error ? err.message : 'Speedtest failed');
         } finally {
             setTestingSpeed(false);
         }
