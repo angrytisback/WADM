@@ -1,0 +1,6 @@
+[advisories]
+ignore = [
+    # Actix-web 4 relies on actix-http 3.x which requires h2 0.3.x.
+    # No patched 0.3.x release has been published upstream yet.
+    "RUSTSEC-2026-0258",
+]
