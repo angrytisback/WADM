@@ -30,6 +30,8 @@ credentials.txt
 # ------------------------------------------------------------------------------
 # Build Artifacts and Packaged Outputs
 # ------------------------------------------------------------------------------
+/dist/
+/data/
 /build/linux-*/
 /build/windows-*/
 *.tar.gz
@@ -37,6 +39,10 @@ credentials.txt
 *.dll
 *.so
 *.dylib
+*.db
+*.db-wal
+*.db-shm
+wadm-ssl.json
 
 # ------------------------------------------------------------------------------
 # IDEs, Editors, and OS Artifacts

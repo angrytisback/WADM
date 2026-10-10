@@ -39,7 +39,7 @@ PrivateTmp=true
 ProtectControlGroups=true
 ProtectKernelModules=true
 ProtectKernelTunables=true
-ReadWritePaths=/var/lib/wadm
+ReadWritePaths=/var/lib/wadm /run/wadm
 
 # Note: NoNewPrivileges and RestrictSUIDSGID must remain disabled so that
 # the 'wadm' service account can invoke whitelisted commands via sudo.

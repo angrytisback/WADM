@@ -238,7 +238,23 @@ pub struct InstallReq {
     name: String,
 }
 
-pub async fn install_dependency(body: web::Json<InstallReq>) -> impl Responder {
+pub async fn install_dependency(
+    user: crate::auth::AuthenticatedUser,
+    audit: web::Data<std::sync::Arc<crate::audit::AuditLogger>>,
+    body: web::Json<InstallReq>,
+) -> impl Responder {
+    if user.require_admin().is_err() {
+        audit.log_denied(
+            &user,
+            "SYSTEM_DEPENDENCY_INSTALL",
+            Some(&body.name),
+            Some("Requires Admin role"),
+        );
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "Insufficient permissions"
+        }));
+    }
+
     let name = body.name.as_str();
 
     // Determine package manager first
@@ -286,18 +302,47 @@ pub async fn install_dependency(body: web::Json<InstallReq>) -> impl Responder {
             let stdout = String::from_utf8_lossy(&o.stdout);
             let stderr = String::from_utf8_lossy(&o.stderr);
             if o.status.success() {
+                audit.log(
+                    &user.username,
+                    user.role.as_str(),
+                    "SYSTEM_DEPENDENCY_INSTALL",
+                    Some(name),
+                    &user.client_ip,
+                    "SUCCESS",
+                    Some(&format!("Package: {}", package_name)),
+                );
                 HttpResponse::Ok().json(format!(
                     "Successfully installed {}.\n\nOutput:\n{}",
                     name, stdout
                 ))
             } else {
+                audit.log(
+                    &user.username,
+                    user.role.as_str(),
+                    "SYSTEM_DEPENDENCY_INSTALL",
+                    Some(name),
+                    &user.client_ip,
+                    "FAILED",
+                    Some(&stderr),
+                );
                 HttpResponse::InternalServerError().json(format!(
                     "Failed to install {}.\n\nError:\n{}\nOutput:\n{}",
                     name, stderr, stdout
                 ))
             }
         }
-        Err(e) => HttpResponse::InternalServerError()
-            .json(format!("Failed to execute installation command: {}", e)),
+        Err(e) => {
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "SYSTEM_DEPENDENCY_INSTALL",
+                Some(name),
+                &user.client_ip,
+                "FAILED",
+                Some(&e.to_string()),
+            );
+            HttpResponse::InternalServerError()
+                .json(format!("Failed to execute installation command: {}", e))
+        }
     }
 }

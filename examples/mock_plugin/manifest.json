@@ -1,0 +1,15 @@
+{
+  "id": "wadm-mock-service",
+  "name": "Mock Service",
+  "version": "1.0.0",
+  "author": "WADM Team",
+  "description": "Reference sidecar plugin demonstrating out-of-process JSON-RPC 2.0 communication over Unix Domain Socket",
+  "executable": "mock_plugin.py",
+  "ui": {
+    "tab_id": "mock-service",
+    "title": "Mock Service",
+    "icon": "cpu",
+    "entry_type": "custom_view"
+  },
+  "capabilities": ["read_metrics", "test_rpc"]
+}

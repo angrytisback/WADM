@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 
 use crate::api::config::AppConfig;
 
+#[allow(dead_code)]
 #[derive(serde::Deserialize)]
 pub struct WsQuery {
     token: Option<String>,
@@ -20,25 +21,18 @@ pub async fn ws_terminal(
     req: HttpRequest,
     stream: web::Payload,
     config_data: web::Data<Mutex<AppConfig>>,
-    query: web::Query<WsQuery>,
+    audit: web::Data<std::sync::Arc<crate::audit::AuditLogger>>,
+    _query: web::Query<WsQuery>,
 ) -> Result<HttpResponse, Error> {
-    let token = if let Some(proto) = req.headers().get("Sec-WebSocket-Protocol") {
-        let p = proto.to_str().unwrap_or("").trim().to_string();
-        if !p.is_empty() {
-            p
-        } else {
-            query.token.clone().unwrap_or_default()
-        }
-    } else {
-        query.token.clone().unwrap_or_default()
+    let client_ip = crate::auth::extract_client_ip(&req);
+
+    let token = match crate::auth::extract_token(&req) {
+        Some(t) if !t.is_empty() => t,
+        _ => return Ok(HttpResponse::Unauthorized().body("Missing token")),
     };
 
-    if token.is_empty() {
-        return Ok(HttpResponse::Unauthorized().body("Missing token"));
-    }
-
     let validation = Validation::new(Algorithm::HS256);
-    let _claims = match decode::<Claims>(
+    let token_data = match decode::<Claims>(
         &token,
         &DecodingKey::from_secret(JWT_SECRET.as_slice()),
         &validation,
@@ -47,13 +41,62 @@ pub async fn ws_terminal(
         Err(_) => return Ok(HttpResponse::Unauthorized().body("Invalid token")),
     };
 
+    let claims = token_data.claims;
+
+    if let Some(user_db) = req.app_data::<web::Data<std::sync::Arc<crate::auth::UserDatabase>>>() {
+        let token_hash = crate::auth::hash_token(&token);
+        if user_db.is_token_revoked(&token_hash, &claims.sub, claims.iat) {
+            return Ok(HttpResponse::Unauthorized().json(serde_json::json!({
+                "error": "Token has been revoked"
+            })));
+        }
+    }
+    if claims.role != crate::auth::UserRole::Admin {
+        log::warn!(
+            "Unauthorized terminal access attempt by user '{}' with role '{}'",
+            claims.sub,
+            claims.role
+        );
+        audit.log(
+            &claims.sub,
+            claims.role.as_str(),
+            "TERMINAL_CONNECT",
+            None,
+            &client_ip,
+            "DENIED",
+            Some("Terminal access requires Admin role"),
+        );
+        return Ok(HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "Insufficient permissions"
+        })));
+    }
+
     {
         let config = config_data.lock().unwrap_or_else(|e| e.into_inner());
         if !config.developer_mode {
             log::warn!("Attempted terminal access without Developer Mode enabled.");
+            audit.log(
+                &claims.sub,
+                claims.role.as_str(),
+                "TERMINAL_CONNECT",
+                None,
+                &client_ip,
+                "DENIED",
+                Some("Developer Mode is disabled"),
+            );
             return Ok(HttpResponse::Forbidden().body("Developer Mode is disabled"));
         }
     }
+
+    audit.log(
+        &claims.sub,
+        claims.role.as_str(),
+        "TERMINAL_CONNECT",
+        None,
+        &client_ip,
+        "SUCCESS",
+        Some("Interactive PTY session started"),
+    );
 
     let (res, mut session, stream) = actix_ws::handle(&req, stream)?;
 

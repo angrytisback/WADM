@@ -7,47 +7,59 @@
 [![Rust](https://img.shields.io/badge/rust-stable%201.80%2B-orange)](https://www.rust-lang.org/)
 [![Docker](https://img.shields.io/badge/ghcr.io-angrytisback%2Fwadm-blue)](https://github.com/angrytisback/WADM/pkgs/container/wadm)
 
-WADM is a self-hosted Linux server administration panel built on Actix-Web 4 and React 19. It delivers real-time system telemetry, Docker orchestration, one-click application deployments, a PTY-backed web terminal, and an integrated file manager — packaged as a single statically-linked binary with an embedded SPA frontend.
+WADM is a lightweight, high-performance, single-binary Linux server administration control plane built with Actix-Web 4, Tokio, and React 19. It delivers real-time kernel telemetry, multi-distribution package management, systemd service supervision, Docker container orchestration, a zero-port-exposure application store, an out-of-process plugin host, native TLS/ACME termination, and multi-node cluster federation via reverse WebSocket tunnels.
 
-The architecture is deliberately minimal: no external database, no metrics agents, no sidecar processes. All telemetry is sourced directly from Linux kernel interfaces (`/proc`, `/sys`, Docker Unix socket). Memory footprint under typical load is below 40 MB.
+The platform requires zero external runtimes (no Python, Node.js, or JVM). All telemetry is sourced directly from Linux kernel virtual filesystems (`/proc`, `/sys`) and the Docker Unix domain socket. Typical idle memory footprint remains below 40 MB.
 
 ---
 
 ## Architecture
 
 ```mermaid
-flowchart LR
-    Browser["Browser\nReact 19 SPA"]
+flowchart TD
+    Browser["Client Browser\nReact 19 Embedded SPA"]
 
-    subgraph Host["Linux Host"]
-        RP["Reverse Proxy\n(Nginx / Caddy)\nTLS Termination"]
-        WADM["WADM Process\nActix-Web 4\nPort :8080"]
+    subgraph CentralHost["Primary Host / Central Hub"]
+        WADM["WADM Server Process\nActix-Web 4 · Tokio · Port :8168 / :443\nEmbedded Static Assets (rust-embed)"]
 
-        subgraph Kernel["Kernel Interfaces (read-only)"]
-            PROC["/proc\nCPU · Memory · Network"]
-            SYS["/sys\nGPU · Thermal · Disk Speed"]
-            SMART["smartctl\nS.M.A.R.T. Queries"]
+        subgraph CoreEngines["Core Application Engines"]
+            AUTH["RBAC & Auth Engine\nArgon2id · TOTP 2FA · JWT"]
+            AUDIT["Persistent Audit Trail\nSQLite WAL (wadm.db)"]
+            JOB["Asynchronous Job Runner\nSQLite WAL · SSE Stream"]
+            RPROXY["Internal Reverse Proxy Router\nSubpath /apps/ & Subdomain Routing"]
+            TLS["Native TLS / ACME Engine\nRustls · Instant-ACME Let's Encrypt"]
+            PLUGIN["Plugin Supervisor\nUDS JSON-RPC 2.0 Host"]
         end
 
-        subgraph Restricted["Restricted Host Operations (sudoers whitelist)"]
-            SYSD["systemctl\nService Control"]
-            UFW["ufw\nFirewall Rules"]
-            KILL["kill\nProcess Signals"]
-            FSTRIM["fstrim\nSSD Trim"]
+        subgraph HostDrivers["Linux OS Trait Drivers"]
+            PROC["/proc · /sys\nCPU · RAM · Disk · GPU · Network"]
+            SYSD["systemctl · journalctl\nService Control & Logs"]
+            PKGMGR["Package Drivers\nAPT · DNF · Pacman"]
+            UFW["ufw\nFirewall Rule Engine"]
+            PTY["portable-pty\nInteractive Shell Bridge"]
+            DOCKER["/var/run/docker.sock\nBollard Async Client"]
         end
-
-        DOCKER["/var/run/docker.sock\nDocker Engine API"]
-        PTY["PTY\nPortable Pseudo-Terminal"]
     end
 
-    Browser -- "HTTPS" --> RP
-    RP -- "HTTP :8080" --> WADM
-    Browser -- "WSS /api/terminal" --> WADM
+    subgraph ClusterNodes["Cluster Worker Nodes (Agents)"]
+        AGENT1["Node Agent (Host B)\nwadm --agent\nNo Inbound Open Ports"]
+        AGENT2["Node Agent (Host C)\nwadm --agent\nNo Inbound Open Ports"]
+    end
 
-    WADM -- "procfs / sysfs" --> Kernel
-    WADM -- "bollard async client" --> DOCKER
-    WADM -- "sudo -n" --> Restricted
-    WADM -- "portable-pty" --> PTY
+    subgraph ExternalServices["External Network"]
+        ACME["Let's Encrypt CA\nHTTP-01 ACME Challenge"]
+        STORE["Remote Plugin / App Store\nHTTPS Manifests & Tarballs"]
+    end
+
+    Browser -- "HTTPS / WSS" --> WADM
+    WADM --> CoreEngines
+    CoreEngines --> HostDrivers
+
+    AGENT1 -- "Outbound Reverse WS Tunnel" --> WADM
+    AGENT2 -- "Outbound Reverse WS Tunnel" --> WADM
+
+    WADM -- "Automated Cert Issuance" --> ACME
+    WADM -- "Verified Downloads (SHA-256)" --> STORE
 ```
 
 ---
@@ -56,193 +68,225 @@ flowchart LR
 
 | Capability                          | WADM                            | Cockpit            | Webmin             |
 |-------------------------------------|---------------------------------|--------------------|--------------------|
-| Runtime language                    | Rust (Actix-Web 4)              | C + JavaScript     | Perl               |
+| Runtime Language                    | Rust (Actix-Web 4 & Tokio)      | C + JavaScript     | Perl               |
 | Frontend                            | React 19 SPA (Vite 7)          | PatternFly (React) | Bootstrap          |
-| External database required          | No                              | No                 | No                 |
-| Metrics collection agent            | None (direct procfs/sysfs)      | None               | None               |
-| Docker socket integration           | Yes (bollard, async)            | Partial (podman)   | Plugin-based       |
-| One-click application deployments   | Yes (Compose templates)         | No                 | No                 |
-| PTY web terminal                    | Yes (xterm.js + portable-pty)   | Yes                | Yes                |
-| Cross-compilation targets           | x86_64, aarch64, riscv64       | x86_64, aarch64    | x86_64             |
-| Typical idle memory                 | < 40 MB                         | ~80 MB             | ~60 MB             |
-| Static binary (no runtime deps)     | Yes                             | No                 | No                 |
-| Apache-2.0 licensed                 | Yes                             | LGPL-2.1           | GPL-3.0            |
+| External Runtime Dependencies       | None (Self-contained binary)    | Node/Python deps   | Perl modules       |
+| Telemetry Engine                    | Direct `/proc` & `/sys`         | PCP / systemd      | System commands    |
+| Container Orchestration             | Native async Docker socket      | Podman integration | Plugin-based       |
+| App Store Deployment Model          | Zero Port Exposure + Rev Proxy  | Manual config      | Manual config      |
+| Extension / Plugin Model            | UDS JSON-RPC 2.0 (Out-of-Proc)  | In-process bridge  | Perl scripts       |
+| Multi-Node Cluster Federation       | Reverse WebSocket Tunnels       | SSH bastion / keys | SSH bastion / keys |
+| Inbound Ports Required for Agents   | 0 (Outbound tunnel only)        | Requires SSH/Port  | Requires Port      |
+| Background Job Runner               | SQLite WAL + SSE Streaming      | None               | Background Cron    |
+| Native TLS & Let's Encrypt          | Built-in Rustls + Instant-ACME  | Requires Proxy     | OpenSSL scripts    |
+| Multi-User RBAC & Audit Trail       | Built-in (Viewer/Op/Admin)      | PAM / OS users     | Webmin ACLs        |
+| Cross-Compilation Targets           | x86_64, aarch64                 | Distro packages    | Architecture indep |
+| Typical Idle Memory                 | < 40 MB                         | ~80 MB             | ~60 MB             |
+| License                             | Apache-2.0                      | LGPL-2.1           | BSD-3-Clause       |
 
 ---
 
-## Core Features
+## Core Capabilities
 
-### Real-Time System Telemetry
+### 1. Real-Time Telemetry & Hardware Inspection
+- **CPU & Thermal:** Per-core utilization, hardware clock rates, and package temperatures sourced from `sysinfo` and `/sys/class/hwmon`.
+- **Memory & Swap:** Physical RAM metrics (Total, Used, Free, Cached, Available) and swap utilization.
+- **Network Throughput:** RX/TX throughput (KB/s, MB/s) with a rolling 60-point historical telemetry series.
+- **Multi-Vendor GPU Support:** Hardware-native sensors for NVIDIA (`nvidia-smi`), AMD (`/sys/class/drm` and sysfs counters), and Intel (`intel_gpu_top` / sysfs frequency ratios).
+- **S.M.A.R.T. Health:** Physical drive telemetry, wear levels, power-on hours, and operational temperatures via `smartctl --scan --json`.
 
-Metrics are collected directly from kernel interfaces with no agents or exporters. The polling interval is user-configurable (1 s, 2 s, or 5 s) and stored in the browser. CPU usage per core, memory and swap consumption, disk partition utilization, and live network throughput (RX/TX KB/s) are displayed on an auto-scrolling 60-point history chart.
+### 2. Zero-Port-Exposure App Store & Internal Reverse Proxy
+- **Strict Network Isolation:** Deployed applications (Nextcloud, Jellyfin, Vaultwarden, Pi-hole, WordPress, Nginx Proxy Manager, Portainer) bind strictly to `127.0.0.1:<internal_port>` or private container networks. Public ports (`0.0.0.0:PORT`) are never exposed.
+- **Internal Reverse Proxy Router:** Web interfaces are exposed securely through WADM's primary HTTP/HTTPS listener via:
+  - Subpath routing: `https://panel.example.com/apps/<app-id>/`
+  - Subdomain routing: `https://<app-id>.panel.example.com`
+- **Firewall Consent Modal:** Applications requiring non-HTTP network protocols (e.g. DNS UDP/53, WireGuard UDP/51820) require explicit administrator approval via an interactive consent modal before updating UFW firewall rules.
+- **Cryptographic Credentials:** Passwords generated via `rand::thread_rng` are stored in `credentials.txt` with mode `0o600`.
 
-Multi-vendor GPU support is implemented natively:
-- NVIDIA: `nvidia-smi` CSV query
-- AMD: `/sys/class/drm/<card>/device/gpu_busy_percent`, `mem_info_vram_*`
-- Intel: sysfs frequency ratio (`gt_act_freq_mhz / gt_max_freq_mhz`)
-- CPU temperature: `/sys/class/thermal/thermal_zone*`
+### 3. Out-of-Process Plugin Host & Store
+- **Fault-Isolated Execution:** Plugins run as independent child processes communicating over Unix Domain Sockets using JSON-RPC 2.0. A plugin failure cannot crash or destabilize the main control plane.
+- **Cryptographic Security:** Plugin archives downloaded from remote stores are verified against published SHA-256 digests prior to extraction.
+- **Zip-Slip Protection:** Path sanitization strictly rejects archive entries containing `..` or absolute paths.
 
-### One-Click App Store
+### 4. Cluster Federation & Headless Node Agents
+- **Outbound Reverse WebSocket Tunnels:** Remote worker nodes connect to the central Hub via `/api/cluster/tunnel`. Nodes require zero public inbound ports or firewall forwarding.
+- **Central Dispatching:** The central Hub seamlessly routes telemetry requests, container controls, and service operations to remote nodes over the established tunnel.
+- **Heartbeat & Liveness Checks:** Automatic 15-second heartbeat ping/pong protocol marks unreachable nodes offline.
+- **Headless Agent Mode:** Run WADM on remote nodes with:
+  ```bash
+  wadm --agent --hub-url ws://hub.example.com:8168/api/cluster/tunnel --token <join-token> --name node-01
+  ```
 
-Pre-configured Docker Compose templates for common server applications:
+### 5. Asynchronous Job Runner & SSE Streaming
+- **Persistent Job State:** Long-running operations (package updates, app deployments, backups) run in background Tokio tasks tracked in SQLite (`wadm.db`) under write-ahead logging (WAL).
+- **Live Terminal Streaming:** Real-time log outputs stream to client browsers via Server-Sent Events (`GET /api/jobs/{id}/stream`).
 
-| Application         | Ports             |
-|---------------------|-------------------|
-| Nextcloud           | 8080              |
-| Pi-hole             | 53, 8081          |
-| WordPress + MariaDB | 8082              |
-| Nginx Proxy Manager | 8084, 8085, 8443  |
-| Portainer CE        | 9000, 9443        |
+### 6. Native Dual-Stack TLS & Automated ACME Let's Encrypt
+- **Rustls Server:** Direct TLS termination without requiring Nginx, Caddy, or Apache.
+- **Automated Let's Encrypt:** Automated HTTP-01 challenge completion and background certificate renewal within 30 days of expiration.
+- **Self-Signed Fallback:** Automatic generation of ECDSA P-256 self-signed certificates for air-gapped or private network installations.
 
-Before installation, WADM checks for port conflicts using `TcpListener::bind`. Passwords are generated with a cryptographically secure RNG (`rand::thread_rng`), written to `credentials.txt` with `0o600` permissions, and retrievable through the credentials API endpoint at any time.
+### 7. Multi-User RBAC & Audit Logging
+- **Role Hierarchy:**
+  - `Viewer`: Read-only telemetry and health monitoring.
+  - `Operator`: Service management, container control, memory flushing, and database backups.
+  - `Admin`: Full supervisory control, user management, terminal shell access, and plugin administration.
+- **Persistent Audit Log:** Every sensitive administrative action is logged to SQLite with timestamps, client IP addresses, usernames, and action statuses.
 
-### Docker Orchestration
-
-Communicates with the Docker Engine through the Unix socket via the `bollard` async client. Provides container lifecycle management (start, stop, restart, remove), real-time per-container CPU and memory statistics, port mapping visibility, and image metadata.
-
-### PTY-Backed Web Terminal
-
-An interactive shell session accessible through the browser using `xterm.js` and `xterm-addon-fit`. The backend allocates a pseudo-terminal via `portable-pty` and bridges it over a WebSocket connection (`actix-ws`). The terminal connects lazily: the PTY is only allocated when the terminal panel is opened and is released when it is closed.
-
-Developer Mode, which exposes the terminal, requires explicit activation in the Settings panel and is disabled by default.
-
-### Integrated File Manager and Editor
-
-Hierarchical file system navigation with inline metadata (permissions, size, modification time). Supports file upload (multipart, with path traversal and null-byte sanitization), download, and in-browser editing for text files up to 10 MB. Sensitive system paths are blocked at the kernel guard layer in `src/api/files.rs`.
-
----
-
-## Screenshots
-
-| Dashboard | App Store |
-|-----------|-----------|
-| ![Dashboard](assets/screenshots/dashboard.png) | ![App Store](assets/screenshots/appstore.png) |
-
-| Docker Manager | Web Terminal |
-|----------------|--------------|
-| ![Docker](assets/screenshots/docker.png) | ![Terminal](assets/screenshots/terminal.png) |
-
-| File Manager | System Services |
-|--------------|-----------------|
-| ![Files](assets/screenshots/files.png) | ![Services](assets/screenshots/services.png) |
+### 8. Interactive Web Terminal (Web TTY)
+- **High-Performance Console:** Terminal emulation via `@xterm/xterm` v6.x and `@xterm/addon-fit`.
+- **PTY Lifecycle Management:** Lazy pseudo-terminal allocation via `portable-pty` over WebSocket (`actix-ws`).
+- **Child Process Reaper:** Active process supervision terminates child shells (`SIGKILL` and process reaping) when WebSocket connections disconnect, preventing zombie processes.
 
 ---
 
 ## Installation
 
-### Docker Compose (Recommended)
+### Automated Production Install (Recommended)
+
+Run the production installer script on your Linux host:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/angrytisback/WADM/main/docker-compose.yml -o docker-compose.yml
-docker compose up -d
+curl -sSL https://raw.githubusercontent.com/angrytisback/WADM/main/scripts/install.sh | sudo bash
 ```
 
-Access the panel at `http://<server-ip>:8080`. On first run, WADM displays a setup wizard to configure administrator credentials and 2FA.
+The installer:
+1. Detects host architecture (`x86_64` or `aarch64`).
+2. Fetches the latest release archive and extracts the statically-linked `wadm` binary to `/usr/local/bin/wadm`.
+3. Creates a dedicated `wadm` system user with no interactive login shell.
+4. Creates persistent directories (`/var/lib/wadm`, `/run/wadm`) with secure permissions.
+5. Installs `/etc/sudoers.d/wadm` granting least-privilege command access.
+6. Installs and enables the hardened `wadm.service` systemd unit.
 
-To place WADM behind a reverse proxy with TLS, add a Nginx or Caddy upstream block pointing to port 8080 and terminate SSL at the proxy.
+### Installing a Cluster Node Agent
 
-### Bare-Metal Installation (systemd)
+To deploy a headless cluster node agent that connects back to your central WADM panel:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/angrytisback/WADM/main/scripts/install.sh | sudo sh
+curl -sSL https://raw.githubusercontent.com/angrytisback/WADM/main/scripts/install.sh | sudo bash -s -- \
+  --agent \
+  --hub-url ws://hub.example.com:8168/api/cluster/tunnel \
+  --token <join-token> \
+  --name worker-fra-01
 ```
 
-The script:
-1. Detects the host architecture (`x86_64`, `aarch64`, or `riscv64`).
-2. Downloads the latest release binary from GitHub Releases.
-3. Creates a dedicated `wadm` system user with no login shell.
-4. Installs `/etc/systemd/system/wadm.service` with hardened process sandboxing.
-5. Installs `/etc/sudoers.d/wadm` with a strict command whitelist.
-6. Enables and starts the service.
+### Docker Deployment
 
-**Manual install** (without piping to shell):
+To deploy WADM via Docker:
 
 ```bash
-# Download the script and inspect it before executing
-curl -fsSL https://raw.githubusercontent.com/angrytisback/WADM/main/scripts/install.sh -o install.sh
-less install.sh
-sudo sh install.sh
+docker run -d \
+  --name wadm \
+  --restart unless-stopped \
+  --privileged \
+  --pid=host \
+  --network=host \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /var/lib/wadm:/var/lib/wadm \
+  -v /run/systemd:/run/systemd \
+  ghcr.io/angrytisback/wadm:latest
 ```
+
+> **Note:** WADM manages host-level system resources (CPU, RAM, Docker, storage). Running with `--pid=host`, `--network=host`, and mounting the Docker socket allows the containerized binary to inspect host processes and container topologies.
 
 ### Building from Source
 
-Prerequisites: Rust stable 1.80+, Node.js 20+, npm 10+.
+#### Prerequisites
+- Rust stable toolchain (1.80 or newer)
+- Node.js (v20 LTS or newer) and npm (v10 or newer)
+- Linux build dependencies: `build-essential` (or `base-devel`)
 
+#### Compilation
 ```bash
 git clone https://github.com/angrytisback/WADM.git
 cd WADM
 
-# Build frontend
+# 1. Build frontend static assets (required before Rust compile)
 cd web && npm ci && npm run build && cd ..
 
-# Build backend (release)
+# 2. Compile release binary with embedded assets
 cargo build --release
 
-# Run (serves frontend from ./web/dist)
+# 3. Launch WADM
 ./target/release/wadm
 ```
 
+The panel will bind to `0.0.0.0:8168` by default. On first launch, navigate to `http://<server-ip>:8168` to complete initial administrator account creation and 2FA enrollment.
+
 ---
 
-## Security Architecture
+## Security Model
 
-### Authentication
+### Authentication & Secrets
+- **Password Hashing:** Passwords are verified using Argon2id with cryptographically random salts.
+- **Two-Factor Authentication:** TOTP (RFC 6238) enforced across all administrative accounts.
+- **Session Tokens:** Dynamically generated 256-bit JWT secret saved to `.wadm_jwt_secret` with mode `0o600`.
+- **Brute-Force Protection:** In-memory rate limiter enforcing a maximum of 5 failed login attempts per minute per IP address.
 
-- **Credentials**: Stored in `wadm-auth.json` as Argon2id hashes (never plaintext).
-- **Two-Factor Authentication**: TOTP (RFC 6238) with QR code enrollment. Enforced on every login after setup.
-- **Session Tokens**: Short-lived JWTs signed with a 32-byte cryptographically random secret generated on first launch and stored in `.wadm_jwt_secret` (`0o600`).
-- **Rate Limiting**: In-memory IP-based rate limiter with configurable thresholds. Expired entries are pruned periodically to prevent memory growth.
+### Filesystem Sandboxing
+All file manager and editor endpoints validate paths against strict security guards:
+- **Blocked Reads:** `/etc/shadow`, `/etc/gshadow`, `/etc/sudoers`, SSH private keys, and `.wadm_jwt_secret`.
+- **Blocked Writes:** `/proc`, `/sys`, `/dev`, `/boot`, and `/etc/sudoers.d`.
+- **Path Traversal Shield:** Canonical path verification rejects any path containing `..` or null-byte characters.
 
 ### Privilege Model
-
-WADM runs as the `wadm` system user. Host-level operations (service control, firewall rules, process signals, disk trim) are delegated through `sudo -n` to a whitelist defined in `/etc/sudoers.d/wadm`. The whitelist grants access to specific binaries only; `NOPASSWD ALL` is never used.
-
-### Filesystem Sandbox
-
-All file manager operations are validated against a blocklist of sensitive paths and patterns:
-- Blocked reads: `/etc/shadow`, `/etc/gshadow`, `/etc/sudoers`, `.wadm_jwt_secret`, `wadm-auth.json`
-- Blocked write directories: `/proc`, `/sys`, `/dev`, `/etc/sudoers.d`
-- All paths are resolved and checked for `..` traversal and null-byte sequences before I/O.
-
-### Developer Mode (Web Terminal)
-
-Disabled by default. When enabled, the panel exposes an interactive shell session over WebSocket. This is an intentional high-privilege feature and must only be enabled on networks with restricted access. The capability is visible in the Settings panel with an explicit risk warning.
+The WADM binary runs under a dedicated `wadm` system user. Host operations (service manipulation, firewall updates, process signals, SSD trimming) are delegated through `sudo -n` against an explicit binary whitelist in `/etc/sudoers.d/wadm`. Broad `NOPASSWD: ALL` grants are never used.
 
 ---
 
-## API Overview
+## API Reference
 
-All API endpoints require a valid JWT in the `Authorization: Bearer <token>` header, obtained from `POST /api/auth/login`.
+All API routes (except `/api/auth/login` and `/api/auth/setup`) require a valid JWT passed in the `Authorization: Bearer <token>` header.
 
-| Method | Endpoint                          | Description                            |
-|--------|-----------------------------------|----------------------------------------|
-| POST   | /api/auth/login                   | Authenticate and receive JWT           |
-| GET    | /api/stats                        | System telemetry snapshot              |
-| GET    | /api/processes                    | Running process list (top 50 by CPU)   |
-| POST   | /api/processes/kill               | Send SIGTERM or SIGKILL to a PID       |
-| GET    | /api/services                     | List systemd units                     |
-| POST   | /api/services/{name}/{action}     | start / stop / restart / enable        |
-| GET    | /api/apps                         | List available App Store templates     |
-| POST   | /api/apps/install                 | Deploy a template via Docker Compose   |
-| GET    | /api/apps/{id}/credentials        | Retrieve generated app credentials     |
-| POST   | /api/apps/{id}/uninstall          | Remove containers, volumes, and data   |
-| GET    | /api/docker/containers            | List Docker containers with stats      |
-| POST   | /api/docker/{id}/{action}         | start / stop / restart / remove        |
-| GET    | /api/files/list                   | Directory listing                      |
-| POST   | /api/files/upload                 | Multipart file upload                  |
-| GET    | /api/files/download               | File download by path                  |
-| WS     | /api/terminal                     | PTY WebSocket (Developer Mode only)    |
+| Method | Endpoint                          | Role Required | Description                                  |
+|--------|-----------------------------------|---------------|----------------------------------------------|
+| POST   | `/api/auth/login`                 | Public        | Authenticate credentials and TOTP code       |
+| GET    | `/api/stats`                      | Viewer        | Real-time system telemetry snapshot          |
+| GET    | `/api/processes`                  | Viewer        | Running process list                         |
+| POST   | `/api/processes/kill`             | Operator      | Send SIGTERM or SIGKILL to a PID             |
+| GET    | `/api/services`                   | Viewer        | List systemd unit states                     |
+| POST   | `/api/services/{name}/{action}`   | Operator      | Manage service lifecycle                     |
+| GET    | `/api/docker/containers`          | Viewer        | List Docker containers and stats             |
+| POST   | `/api/docker/{id}/{action}`       | Operator      | Start, stop, restart, or remove a container  |
+| GET    | `/api/apps`                       | Viewer        | List App Store templates                     |
+| POST   | `/api/apps/install`               | Admin         | Deploy an App Store container stack          |
+| GET    | `/api/apps/{id}/credentials`      | Admin         | Retrieve credentials for a deployed app      |
+| POST   | `/api/apps/{id}/uninstall`        | Admin         | Uninstall an application stack and volumes   |
+| GET    | `/api/jobs/{id}/stream`           | Viewer        | Server-Sent Events stream for background job |
+| GET    | `/api/cluster/nodes`              | Viewer        | List federated cluster nodes                 |
+| POST   | `/api/cluster/nodes`              | Admin         | Register a new cluster node                  |
+| WS     | `/api/cluster/tunnel`             | Node Agent    | Outbound reverse WebSocket agent tunnel      |
+| GET    | `/api/plugins`                    | Viewer        | List installed plugins and status            |
+| POST   | `/api/plugins/{id}/install`       | Admin         | Install plugin from store or URL             |
+| GET    | `/api/audit/logs`                 | Admin         | Query and export persistent audit trail      |
+| WS     | `/api/terminal`                   | Admin         | Interactive PTY WebSocket shell session      |
+
+---
+
+## Uninstallation
+
+To remove WADM from your server:
+
+```bash
+sudo /usr/local/bin/wadm --uninstall 2>/dev/null || sudo bash scripts/uninstall.sh
+```
+
+To completely purge all persistent configuration, databases, SSL certificates, and application data:
+
+```bash
+sudo bash scripts/uninstall.sh --purge
+```
 
 ---
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, quality gates, and the pull request process.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for local development setup, coding standards, and testing procedures.
 
 ## Security
 
-See [SECURITY.md](SECURITY.md) for the vulnerability disclosure policy and supported version matrix.
+See [SECURITY.md](SECURITY.md) for vulnerability reporting guidelines and supported version details.
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE) for the full text.
+Apache License 2.0. See [LICENSE](LICENSE) for details.

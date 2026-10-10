@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
+import { FaTrash } from 'react-icons/fa';
 import { useToast } from '../context/ToastContext';
 import { useSystem } from '../context/SystemContext';
 import { useModal } from '../context/ModalContext';
+import { useAuth } from '../context/AuthContext';
 
 
 interface FirewallStatus {
@@ -19,8 +21,14 @@ function Firewall() {
     const [showReboot, setShowReboot] = useState(false);
     const { addToast } = useToast();
     const { systemInfo } = useSystem();
-    const canManage = systemInfo?.is_root || systemInfo?.has_sudo;
-    const privilegeHint = !canManage ? "Root or Sudo privileges required for this action" : "";
+    const { isAdmin } = useAuth();
+    const hasSudo = systemInfo?.is_root || systemInfo?.has_sudo;
+    const canManage = hasSudo && isAdmin();
+    const privilegeHint = !isAdmin()
+        ? "Admin role required for firewall management"
+        : !hasSudo
+            ? "Root or Sudo privileges required for this action"
+            : "";
 
     const fetchStatus = useCallback(() => {
         setLoading(true);
@@ -245,7 +253,7 @@ function Firewall() {
                                                 disabled={!!processingRule || !canManage}
                                                 style={{ opacity: !canManage ? 0.5 : 1 }}
                                             >
-                                                {processingRule === rule ? <span className="spinner" style={{ width: '0.8rem', height: '0.8rem' }}></span> : '🗑️'}
+                                                {processingRule === rule ? <span className="spinner" style={{ width: '0.8rem', height: '0.8rem' }}></span> : <FaTrash />}
                                             </button>
                                         </td>
                                     </tr>

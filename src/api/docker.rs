@@ -145,11 +145,31 @@ pub async fn get_container_stats(id: web::Path<String>) -> impl Responder {
 }
 
 pub async fn control_container(
+    user: crate::auth::AuthenticatedUser,
+    audit: web::Data<std::sync::Arc<crate::audit::AuditLogger>>,
     id: web::Path<String>,
     body: web::Json<ContainerAction>,
 ) -> impl Responder {
     let container_id = id.into_inner();
     let action = &body.action;
+
+    let perm_check = if action == "remove" {
+        user.require_admin()
+    } else {
+        user.require_operator()
+    };
+
+    if perm_check.is_err() {
+        audit.log_denied(
+            &user,
+            "DOCKER_ACTION",
+            Some(&container_id),
+            Some(&format!("Action '{}' requires higher privileges", action)),
+        );
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "Insufficient permissions"
+        }));
+    }
 
     let docker = match Docker::connect_with_local_defaults() {
         Ok(d) => d,
@@ -201,12 +221,30 @@ pub async fn control_container(
     match result {
         Ok(_) => {
             info!("Successfully {}ed container {}", action, container_id);
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "DOCKER_ACTION",
+                Some(&container_id),
+                &user.client_ip,
+                "SUCCESS",
+                Some(&format!("Action: {}", action)),
+            );
             HttpResponse::Ok().json(format!("Container {} {}ed", container_id, action))
         }
         Err(e) => {
             info!(
                 "Docker action {} failed for {}: {}",
                 action, container_id, e
+            );
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "DOCKER_ACTION",
+                Some(&container_id),
+                &user.client_ip,
+                "FAILED",
+                Some(&e.to_string()),
             );
             HttpResponse::InternalServerError().json(format!("Docker action failed: {}", e))
         }
@@ -247,7 +285,22 @@ pub async fn get_status() -> impl Responder {
     })
 }
 
-pub async fn start_service() -> impl Responder {
+pub async fn start_service(
+    user: crate::auth::AuthenticatedUser,
+    audit: web::Data<std::sync::Arc<crate::audit::AuditLogger>>,
+) -> impl Responder {
+    if user.require_operator().is_err() {
+        audit.log_denied(
+            &user,
+            "DOCKER_SERVICE_START",
+            Some("docker.service"),
+            Some("Requires Operator or Admin role"),
+        );
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "Insufficient permissions"
+        }));
+    }
+
     let status = Command::new("sudo")
         .args(["-n", "systemctl", "start", "docker"])
         .status();
@@ -255,11 +308,40 @@ pub async fn start_service() -> impl Responder {
     match status {
         Ok(s) => {
             if s.success() {
+                audit.log(
+                    &user.username,
+                    user.role.as_str(),
+                    "DOCKER_SERVICE_START",
+                    Some("docker.service"),
+                    &user.client_ip,
+                    "SUCCESS",
+                    None,
+                );
                 HttpResponse::Ok().json("Docker service started")
             } else {
+                audit.log(
+                    &user.username,
+                    user.role.as_str(),
+                    "DOCKER_SERVICE_START",
+                    Some("docker.service"),
+                    &user.client_ip,
+                    "FAILED",
+                    Some("systemctl start docker exited with error"),
+                );
                 HttpResponse::InternalServerError().json("Failed to start docker service")
             }
         }
-        Err(e) => HttpResponse::InternalServerError().json(format!("Error: {}", e)),
+        Err(e) => {
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "DOCKER_SERVICE_START",
+                Some("docker.service"),
+                &user.client_ip,
+                "FAILED",
+                Some(&e.to_string()),
+            );
+            HttpResponse::InternalServerError().json(format!("Error: {}", e))
+        }
     }
 }

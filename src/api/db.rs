@@ -7,6 +7,12 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
 use std::process::Command;
+use std::sync::Arc;
+
+pub use crate::drivers::database::is_valid_db_identifier;
+#[allow(unused_imports)]
+pub use crate::drivers::database::QueryResult;
+use crate::drivers::DriverRegistry;
 
 #[derive(Serialize)]
 pub struct Database {
@@ -27,28 +33,13 @@ pub struct QueryRequest {
 }
 
 #[derive(Serialize)]
-pub struct QueryResult {
-    pub columns: Vec<String>,
-    pub rows: Vec<Vec<String>>,
-}
-
-#[derive(Serialize)]
 pub struct BackupInfo {
     pub filename: String,
     pub size: u64,
     pub created_at: String,
 }
 
-fn is_valid_db_identifier(name: &str) -> bool {
-    !name.is_empty()
-        && !name.starts_with('-')
-        && name.len() <= 64
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-}
-
-fn is_valid_backup_filename(name: &str) -> bool {
+pub fn is_valid_backup_filename(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('.')
         && !name.starts_with('-')
@@ -83,7 +74,7 @@ fn normalize_sql(query: &str) -> String {
         // Single-line comment -- ...
         if i + 1 < n && chars[i] == '-' && chars[i + 1] == '-' {
             i += 2;
-            while i < n && chars[i] != '\n' && chars[i] != '\r' {
+            while i + 1 < n && chars[i] != '\n' && chars[i] != '\r' {
                 i += 1;
             }
             clean.push(' ');
@@ -177,51 +168,24 @@ fn is_dangerous_query(query: &str) -> bool {
     false
 }
 
-pub async fn list_dbs() -> impl Responder {
+pub async fn list_dbs(registry: web::Data<DriverRegistry>) -> impl Responder {
     let mut dbs = Vec::new();
 
-    // 1. Native MySQL
-    if let Ok(output) = Command::new("mysql")
-        .args(["-e", "SHOW DATABASES"])
-        .output()
-    {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines().skip(1) {
-                if !line.trim().is_empty() {
-                    dbs.push(Database {
-                        name: line.trim().to_string(),
-                        engine: "mysql".to_string(),
-                        size: "-".to_string(),
-                        container_id: None,
-                    });
-                }
+    // 1. Native databases via registered drivers
+    for (engine_name, driver) in &registry.databases {
+        if let Ok(db_names) = driver.list_databases().await {
+            for name in db_names {
+                dbs.push(Database {
+                    name,
+                    engine: engine_name.clone(),
+                    size: "-".to_string(),
+                    container_id: None,
+                });
             }
         }
     }
 
-    // 2. Native Postgres
-    if let Ok(output) = Command::new("sudo")
-        .args(["-n", "-u", "postgres", "psql", "-l", "-t", "-A", "-F", "|"])
-        .output()
-    {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                let parts: Vec<&str> = line.split('|').collect();
-                if !parts.is_empty() && !parts[0].trim().is_empty() {
-                    dbs.push(Database {
-                        name: parts[0].to_string(),
-                        engine: "postgres".to_string(),
-                        size: "-".to_string(),
-                        container_id: None,
-                    });
-                }
-            }
-        }
-    }
-
-    // 3. Docker Databases
+    // 2. Docker Databases
     if let Ok(output) = Command::new("docker")
         .args(["ps", "--format", "{{.ID}}|{{.Image}}|{{.Names}}"])
         .output()
@@ -237,43 +201,53 @@ pub async fn list_dbs() -> impl Responder {
                 let id = parts[0];
                 let image = parts[1].to_lowercase();
 
-                if image.contains("postgres") {
-                    if let Ok(db_out) = Command::new("docker")
-                        .args([
-                            "exec", id, "psql", "-U", "postgres", "-l", "-t", "-A", "-F", "|",
-                        ])
-                        .output()
-                    {
-                        if db_out.status.success() {
-                            let db_stdout = String::from_utf8_lossy(&db_out.stdout);
-                            for db_line in db_stdout.lines() {
-                                let db_parts: Vec<&str> = db_line.split('|').collect();
-                                if !db_parts.is_empty() && !db_parts[0].trim().is_empty() {
-                                    dbs.push(Database {
-                                        name: db_parts[0].to_string(),
-                                        engine: "postgres".to_string(),
-                                        size: "Docker".to_string(),
-                                        container_id: Some(id.to_string()),
-                                    });
+                let detected_engine = if image.contains("postgres") {
+                    Some("postgres")
+                } else if image.contains("mysql") || image.contains("mariadb") {
+                    Some("mysql")
+                } else {
+                    None
+                };
+
+                if let Some(engine) = detected_engine {
+                    if engine == "postgres" {
+                        if let Ok(db_out) = Command::new("docker")
+                            .args([
+                                "exec", id, "psql", "-U", "postgres", "-l", "-t", "-A", "-F", "|",
+                            ])
+                            .output()
+                        {
+                            if db_out.status.success() {
+                                let db_stdout = String::from_utf8_lossy(&db_out.stdout);
+                                for db_line in db_stdout.lines() {
+                                    let db_parts: Vec<&str> = db_line.split('|').collect();
+                                    if !db_parts.is_empty() && !db_parts[0].trim().is_empty() {
+                                        dbs.push(Database {
+                                            name: db_parts[0].to_string(),
+                                            engine: "postgres".to_string(),
+                                            size: "Docker".to_string(),
+                                            container_id: Some(id.to_string()),
+                                        });
+                                    }
                                 }
                             }
                         }
-                    }
-                } else if image.contains("mysql") || image.contains("mariadb") {
-                    if let Ok(db_out) = Command::new("docker")
-                        .args(["exec", id, "mysql", "-uroot", "-e", "SHOW DATABASES", "-N"])
-                        .output()
-                    {
-                        if db_out.status.success() {
-                            let db_stdout = String::from_utf8_lossy(&db_out.stdout);
-                            for db_line in db_stdout.lines() {
-                                if !db_line.trim().is_empty() {
-                                    dbs.push(Database {
-                                        name: db_line.trim().to_string(),
-                                        engine: "mysql".to_string(),
-                                        size: "Docker".to_string(),
-                                        container_id: Some(id.to_string()),
-                                    });
+                    } else if engine == "mysql" {
+                        if let Ok(db_out) = Command::new("docker")
+                            .args(["exec", id, "mysql", "-uroot", "-e", "SHOW DATABASES"])
+                            .output()
+                        {
+                            if db_out.status.success() {
+                                let db_stdout = String::from_utf8_lossy(&db_out.stdout);
+                                for db_line in db_stdout.lines().skip(1) {
+                                    if !db_line.trim().is_empty() {
+                                        dbs.push(Database {
+                                            name: db_line.trim().to_string(),
+                                            engine: "mysql".to_string(),
+                                            size: "Docker".to_string(),
+                                            container_id: Some(id.to_string()),
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -289,6 +263,7 @@ pub async fn list_dbs() -> impl Responder {
 pub async fn list_tables(
     path: web::Path<(String, String)>,
     query: web::Query<std::collections::HashMap<String, String>>,
+    registry: web::Data<DriverRegistry>,
 ) -> impl Responder {
     let (engine, db_name) = path.into_inner();
     let container_id = query.get("container_id");
@@ -300,75 +275,30 @@ pub async fn list_tables(
         return HttpResponse::BadRequest().json("Invalid identifier");
     }
 
-    let mut tables = Vec::new();
+    let driver = match registry.get_database(&engine) {
+        Some(d) => d,
+        None => return HttpResponse::BadRequest().json("Unsupported database engine"),
+    };
 
-    if engine == "mysql" {
-        let mut cmd = if let Some(cid) = container_id {
-            let mut c = Command::new("docker");
-            c.args([
-                "exec",
-                cid,
-                "mysql",
-                "-uroot",
-                "-D",
-                &db_name,
-                "-e",
-                "SHOW TABLES",
-                "-N",
-            ]);
-            c
-        } else {
-            let mut c = Command::new("mysql");
-            c.args(["-D", &db_name, "-e", "SHOW TABLES", "-N"]);
-            c
-        };
-
-        if let Ok(output) = cmd.output() {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                for line in stdout.lines() {
-                    tables.push(TableInfo {
-                        name: line.trim().to_string(),
-                    });
-                }
-            }
+    match driver
+        .list_tables(&db_name, container_id.map(|s| s.as_str()))
+        .await
+    {
+        Ok(tables) => {
+            let list: Vec<TableInfo> = tables.into_iter().map(|name| TableInfo { name }).collect();
+            HttpResponse::Ok().json(list)
         }
-    } else if engine == "postgres" {
-        let mut cmd = if let Some(cid) = container_id {
-            let mut c = Command::new("docker");
-            c.args([
-                "exec", cid, "psql", "-U", "postgres", "-d", &db_name, "-t", "-A", "-c", "\\dt",
-            ]);
-            c
-        } else {
-            let mut c = Command::new("sudo");
-            c.args([
-                "-n", "-u", "postgres", "psql", "-d", &db_name, "-t", "-A", "-c", "\\dt",
-            ]);
-            c
-        };
-
-        if let Ok(output) = cmd.output() {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                for line in stdout.lines() {
-                    let parts: Vec<&str> = line.split('|').collect();
-                    if parts.len() >= 2 {
-                        tables.push(TableInfo {
-                            name: parts[1].to_string(),
-                        });
-                    }
-                }
-            }
+        Err(e) => {
+            log::error!("Failed to list tables: {}", e);
+            HttpResponse::InternalServerError().json("Failed to list tables")
         }
     }
-
-    HttpResponse::Ok().json(tables)
 }
 
 pub async fn get_table_data(
     path: web::Path<(String, String, String)>,
     query: web::Query<std::collections::HashMap<String, String>>,
+    registry: web::Data<DriverRegistry>,
 ) -> impl Responder {
     let (engine, db_name, table_name) = path.into_inner();
     let container_id = query.get("container_id");
@@ -382,16 +312,38 @@ pub async fn get_table_data(
     }
 
     let sql = format!("SELECT * FROM {} LIMIT 100", table_name);
-    execute_sql_internal(&engine, &db_name, &sql, container_id.map(|s| s.as_str())).await
+    execute_sql_internal(
+        &engine,
+        &db_name,
+        &sql,
+        container_id.map(|s| s.as_str()),
+        &registry,
+    )
+    .await
 }
 
 pub async fn execute_query(
+    user: crate::auth::AuthenticatedUser,
+    audit: web::Data<std::sync::Arc<crate::audit::AuditLogger>>,
     path: web::Path<(String, String)>,
     query_params: web::Query<std::collections::HashMap<String, String>>,
     body: web::Json<QueryRequest>,
+    registry: web::Data<DriverRegistry>,
 ) -> impl Responder {
     let (engine, db_name) = path.into_inner();
     let container_id = query_params.get("container_id");
+
+    if user.require_admin().is_err() {
+        audit.log_denied(
+            &user,
+            "DB_QUERY",
+            Some(&format!("{}:{}", engine, db_name)),
+            Some("Requires Admin role"),
+        );
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "Insufficient permissions"
+        }));
+    }
 
     if !is_valid_db_identifier(&engine)
         || !is_valid_db_identifier(&db_name)
@@ -406,6 +358,15 @@ pub async fn execute_query(
             db_name,
             engine,
             body.query
+        );
+        audit.log(
+            &user.username,
+            user.role.as_str(),
+            "DB_QUERY",
+            Some(&format!("{}:{}", engine, db_name)),
+            &user.client_ip,
+            "DENIED",
+            Some("Query contains forbidden operations"),
         );
         return HttpResponse::BadRequest().json("Query contains forbidden operations");
     }
@@ -428,13 +389,32 @@ pub async fn execute_query(
         &db_name,
         &body.query,
         container_id.map(|s| s.as_str()),
+        &registry,
     )
     .await;
 
     if is_mutation && result.status().is_success() {
         info!("Successfully completed database change on {}.", db_name);
+        audit.log(
+            &user.username,
+            user.role.as_str(),
+            "DB_QUERY",
+            Some(&format!("{}:{}", engine, db_name)),
+            &user.client_ip,
+            "SUCCESS",
+            Some(&body.query),
+        );
     } else if is_mutation {
         info!("Database change failed on {}.", db_name);
+        audit.log(
+            &user.username,
+            user.role.as_str(),
+            "DB_QUERY",
+            Some(&format!("{}:{}", engine, db_name)),
+            &user.client_ip,
+            "FAILED",
+            Some(&body.query),
+        );
     }
 
     result
@@ -445,85 +425,28 @@ async fn execute_sql_internal(
     db: &str,
     query: &str,
     container_id: Option<&str>,
+    registry: &DriverRegistry,
 ) -> HttpResponse {
-    let mut columns = Vec::new();
-    let mut rows = Vec::new();
+    let driver = match registry.get_database(engine) {
+        Some(d) => d,
+        None => return HttpResponse::BadRequest().json("Database engine not supported"),
+    };
 
-    if engine == "mysql" {
-        let mut cmd = if let Some(cid) = container_id {
-            let mut c = Command::new("docker");
-            c.args(["exec", cid, "mysql", "-uroot", "-D", db, "-B", "-e", query]);
-            c
-        } else {
-            let mut c = Command::new("mysql");
-            c.args(["-D", db, "-B", "-e", query]);
-            c
-        };
-
-        if let Ok(output) = cmd.output() {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let mut lines = stdout.lines();
-                if let Some(header) = lines.next() {
-                    columns = header.split('\t').map(|s| s.to_string()).collect();
-                    for line in lines {
-                        rows.push(line.split('\t').map(|s| s.to_string()).collect());
-                    }
-                }
-                return HttpResponse::Ok().json(QueryResult { columns, rows });
-            } else {
-                log::warn!(
-                    "MySQL query error in {}: {}",
-                    db,
-                    String::from_utf8_lossy(&output.stderr)
-                );
-                return HttpResponse::BadRequest().json("Database query execution failed");
-            }
-        }
-    } else if engine == "postgres" {
-        let mut cmd = if let Some(cid) = container_id {
-            let mut c = Command::new("docker");
-            c.args([
-                "exec", cid, "psql", "-U", "postgres", "-d", db, "-A", "-F", "\t", "-c", query,
-            ]);
-            c
-        } else {
-            let mut c = Command::new("sudo");
-            c.args([
-                "-n", "-u", "postgres", "psql", "-d", db, "-A", "-F", "\t", "-c", query,
-            ]);
-            c
-        };
-
-        if let Ok(output) = cmd.output() {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let mut lines = stdout.lines();
-                if let Some(header) = lines.next() {
-                    columns = header.split('\t').map(|s| s.to_string()).collect();
-                    for line in lines {
-                        if line.contains('(') && line.contains("row") {
-                            break;
-                        }
-                        rows.push(line.split('\t').map(|s| s.to_string()).collect());
-                    }
-                }
-                return HttpResponse::Ok().json(QueryResult { columns, rows });
-            } else {
-                log::warn!(
-                    "Postgres query error in {}: {}",
-                    db,
-                    String::from_utf8_lossy(&output.stderr)
-                );
-                return HttpResponse::BadRequest().json("Database query execution failed");
-            }
+    match driver
+        .execute_query_container(db, query, container_id)
+        .await
+    {
+        Ok(result) => HttpResponse::Ok().json(result),
+        Err(e) => {
+            log::warn!("Query execution error in {} ({}): {}", db, engine, e);
+            HttpResponse::BadRequest().json("Database query execution failed")
         }
     }
-
-    HttpResponse::InternalServerError().json("Database engine not supported or command failed")
 }
 
+// ============================================================================
 // BACKUP & RESTORE
+// ============================================================================
 
 fn get_backup_dir(engine: &str, db: &str) -> String {
     format!("backups/db/{}/{}", engine, db)
@@ -560,23 +483,46 @@ pub async fn list_backups(path: web::Path<(String, String)>) -> impl Responder {
         }
     }
 
-    backups.sort_by(|a, b| b.filename.cmp(&a.filename)); // Newest first (by name timestamp)
+    backups.sort_by(|a, b| b.filename.cmp(&a.filename)); // Newest first
     HttpResponse::Ok().json(backups)
 }
 
 pub async fn create_backup(
+    user: crate::auth::AuthenticatedUser,
+    audit: web::Data<std::sync::Arc<crate::audit::AuditLogger>>,
     path: web::Path<(String, String)>,
     query: web::Query<std::collections::HashMap<String, String>>,
+    job_manager: web::Data<Arc<crate::api::jobs::JobManager>>,
+    registry: web::Data<DriverRegistry>,
 ) -> impl Responder {
     let (engine, db) = path.into_inner();
-    let container_id = query.get("container_id");
+    let container_id = query.get("container_id").cloned();
+
+    if user.require_operator().is_err() {
+        audit.log_denied(
+            &user,
+            "DB_BACKUP_CREATE",
+            Some(&format!("{}:{}", engine, db)),
+            Some("Requires Operator or Admin role"),
+        );
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "Insufficient permissions"
+        }));
+    }
 
     if !is_valid_db_identifier(&engine)
         || !is_valid_db_identifier(&db)
-        || container_id.is_some_and(|c| !is_valid_db_identifier(c))
+        || container_id
+            .as_deref()
+            .is_some_and(|c| !is_valid_db_identifier(c))
     {
         return HttpResponse::BadRequest().json("Invalid identifier");
     }
+
+    let driver = match registry.get_database(&engine) {
+        Some(d) => d,
+        None => return HttpResponse::BadRequest().json("Unsupported database engine"),
+    };
 
     let dir = get_backup_dir(&engine, &db);
     if let Err(e) = fs::create_dir_all(&dir) {
@@ -586,61 +532,78 @@ pub async fn create_backup(
 
     let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
     let filename = format!("{}_{}.sql", db, timestamp);
-    let filepath = format!("{}/{}", dir, filename);
+    let filepath = std::path::PathBuf::from(&dir).join(filename);
 
-    info!("Starting database backup for {} ({})...", db, engine);
+    info!("Enqueuing database backup job for {} ({})...", db, engine);
 
-    let file = match fs::File::create(&filepath) {
-        Ok(f) => f,
+    let (cmd, args) =
+        driver.build_backup_command_container(&db, &filepath, container_id.as_deref());
+
+    match job_manager
+        .enqueue_job(
+            "db_backup",
+            crate::api::jobs::JobTaskPayload::CommandExecution {
+                cmd,
+                args,
+                output_file: Some(filepath),
+                description: format!("Backup for {} ({})", db, engine),
+            },
+        )
+        .await
+    {
+        Ok(job_id) => {
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "DB_BACKUP_CREATE",
+                Some(&format!("{}:{}", engine, db)),
+                &user.client_ip,
+                "SUCCESS",
+                Some(&format!("Job ID: {}", job_id)),
+            );
+            HttpResponse::Accepted().json(crate::api::jobs::JobActionResponse {
+                job_id,
+                status: "pending".to_string(),
+                message: "Database backup job queued successfully".to_string(),
+            })
+        }
         Err(e) => {
-            log::error!("Failed to create backup target file at {}: {}", filepath, e);
-            return HttpResponse::InternalServerError().json("Failed to create backup target file");
+            log::error!("Failed to queue database backup: {}", e);
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "DB_BACKUP_CREATE",
+                Some(&format!("{}:{}", engine, db)),
+                &user.client_ip,
+                "FAILED",
+                Some(&e.to_string()),
+            );
+            HttpResponse::InternalServerError().json("Failed to queue database backup")
         }
-    };
-
-    let mut cmd = if engine == "mysql" {
-        if let Some(cid) = container_id {
-            let mut c = Command::new("docker");
-            c.args(["exec", cid, "mysqldump", "-uroot", &db]);
-            c
-        } else {
-            let mut c = Command::new("mysqldump");
-            c.args(["-uroot", &db]);
-            c
-        }
-    } else if engine == "postgres" {
-        if let Some(cid) = container_id {
-            let mut c = Command::new("docker");
-            c.args(["exec", cid, "pg_dump", "-U", "postgres", &db]);
-            c
-        } else {
-            let mut c = Command::new("sudo");
-            c.args(["-n", "-u", "postgres", "pg_dump", &db]);
-            c
-        }
-    } else {
-        return HttpResponse::BadRequest().json("Unsupported database engine");
-    };
-
-    cmd.stdout(std::process::Stdio::from(file));
-    let success = cmd.status().map(|s| s.success()).unwrap_or(false);
-
-    if success {
-        info!("Backup completed successfully: {}", filename);
-        HttpResponse::Ok().json(format!("Backup created: {}", filename))
-    } else {
-        info!("Backup failed for {}.", db);
-        let _ = fs::remove_file(&filepath);
-        HttpResponse::InternalServerError().json("Failed to create backup")
     }
 }
 
 pub async fn restore_backup(
+    user: crate::auth::AuthenticatedUser,
+    audit: web::Data<std::sync::Arc<crate::audit::AuditLogger>>,
     path: web::Path<(String, String, String)>,
     query: web::Query<std::collections::HashMap<String, String>>,
+    registry: web::Data<DriverRegistry>,
 ) -> impl Responder {
     let (engine, db, filename) = path.into_inner();
     let container_id = query.get("container_id");
+
+    if user.require_admin().is_err() {
+        audit.log_denied(
+            &user,
+            "DB_BACKUP_RESTORE",
+            Some(&format!("{}:{}:{}", engine, db, filename)),
+            Some("Requires Admin role"),
+        );
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "Insufficient permissions"
+        }));
+    }
 
     if !is_valid_db_identifier(&engine)
         || !is_valid_db_identifier(&db)
@@ -649,6 +612,11 @@ pub async fn restore_backup(
     {
         return HttpResponse::BadRequest().json("Invalid identifier or filename");
     }
+
+    let driver = match registry.get_database(&engine) {
+        Some(d) => d,
+        None => return HttpResponse::BadRequest().json("Unsupported database engine"),
+    };
 
     let filepath = format!("{}/{}", get_backup_dir(&engine, &db), filename);
 
@@ -665,38 +633,39 @@ pub async fn restore_backup(
         db, filename
     );
 
-    let mut cmd = if engine == "mysql" {
-        if let Some(cid) = container_id {
-            let mut c = Command::new("docker");
-            c.args(["exec", "-i", cid, "mysql", "-uroot", &db]);
-            c
-        } else {
-            let mut c = Command::new("mysql");
-            c.args(["-uroot", &db]);
-            c
-        }
-    } else if engine == "postgres" {
-        if let Some(cid) = container_id {
-            let mut c = Command::new("docker");
-            c.args(["exec", "-i", cid, "psql", "-U", "postgres", "-d", &db]);
-            c
-        } else {
-            let mut c = Command::new("sudo");
-            c.args(["-n", "-u", "postgres", "psql", "-d", &db]);
-            c
-        }
-    } else {
-        return HttpResponse::BadRequest().json("Unsupported database engine");
-    };
+    let path_buf = std::path::PathBuf::from(&filepath);
+    let (cmd_str, args) =
+        driver.build_restore_command_container(&db, &path_buf, container_id.map(|s| s.as_str()));
 
+    let mut cmd = Command::new(&cmd_str);
+    cmd.args(&args);
     cmd.stdin(std::process::Stdio::from(file));
+
     let success = cmd.status().map(|s| s.success()).unwrap_or(false);
 
     if success {
         info!("Database {} successfully restored from {}.", db, filename);
+        audit.log(
+            &user.username,
+            user.role.as_str(),
+            "DB_BACKUP_RESTORE",
+            Some(&format!("{}:{}:{}", engine, db, filename)),
+            &user.client_ip,
+            "SUCCESS",
+            None,
+        );
         HttpResponse::Ok().json("Restore successful")
     } else {
         info!("Database restoration failed for {}.", db);
+        audit.log(
+            &user.username,
+            user.role.as_str(),
+            "DB_BACKUP_RESTORE",
+            Some(&format!("{}:{}:{}", engine, db, filename)),
+            &user.client_ip,
+            "FAILED",
+            None,
+        );
         HttpResponse::InternalServerError().json("Restore failed")
     }
 }
@@ -720,10 +689,24 @@ pub async fn download_backup(
 }
 
 pub async fn upload_backup(
+    user: crate::auth::AuthenticatedUser,
+    audit: web::Data<std::sync::Arc<crate::audit::AuditLogger>>,
     path: web::Path<(String, String)>,
     mut payload: Multipart,
 ) -> Result<HttpResponse, Error> {
     let (engine, db) = path.into_inner();
+
+    if user.require_admin().is_err() {
+        audit.log_denied(
+            &user,
+            "DB_BACKUP_UPLOAD",
+            Some(&format!("{}:{}", engine, db)),
+            Some("Requires Admin role"),
+        );
+        return Ok(HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "Insufficient permissions"
+        })));
+    }
 
     if !is_valid_db_identifier(&engine) || !is_valid_db_identifier(&db) {
         return Ok(HttpResponse::BadRequest().json("Invalid identifier"));
@@ -753,11 +736,37 @@ pub async fn upload_backup(
         info!("Imported SQL file saved as: {}", safe_filename);
     }
 
+    audit.log(
+        &user.username,
+        user.role.as_str(),
+        "DB_BACKUP_UPLOAD",
+        Some(&format!("{}:{}", engine, db)),
+        &user.client_ip,
+        "SUCCESS",
+        None,
+    );
+
     Ok(HttpResponse::Ok().json("File uploaded successfully"))
 }
 
-pub async fn delete_backup(path: web::Path<(String, String, String)>) -> impl Responder {
+pub async fn delete_backup(
+    user: crate::auth::AuthenticatedUser,
+    audit: web::Data<std::sync::Arc<crate::audit::AuditLogger>>,
+    path: web::Path<(String, String, String)>,
+) -> impl Responder {
     let (engine, db, filename) = path.into_inner();
+
+    if user.require_admin().is_err() {
+        audit.log_denied(
+            &user,
+            "DB_BACKUP_DELETE",
+            Some(&format!("{}:{}:{}", engine, db, filename)),
+            Some("Requires Admin role"),
+        );
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "Insufficient permissions"
+        }));
+    }
 
     if !is_valid_db_identifier(&engine)
         || !is_valid_db_identifier(&db)
@@ -768,10 +777,28 @@ pub async fn delete_backup(path: web::Path<(String, String, String)>) -> impl Re
 
     let filepath = format!("{}/{}", get_backup_dir(&engine, &db), filename);
 
-    if fs::remove_file(filepath).is_ok() {
-        info!("Deleted backup file: {}", filename);
+    info!("Removing backup file: {}", filename);
+    if fs::remove_file(&filepath).is_ok() {
+        audit.log(
+            &user.username,
+            user.role.as_str(),
+            "DB_BACKUP_DELETE",
+            Some(&format!("{}:{}:{}", engine, db, filename)),
+            &user.client_ip,
+            "SUCCESS",
+            None,
+        );
         HttpResponse::Ok().json("Backup deleted")
     } else {
+        audit.log(
+            &user.username,
+            user.role.as_str(),
+            "DB_BACKUP_DELETE",
+            Some(&format!("{}:{}:{}", engine, db, filename)),
+            &user.client_ip,
+            "FAILED",
+            None,
+        );
         HttpResponse::InternalServerError().json("Failed to delete backup")
     }
 }
@@ -783,20 +810,24 @@ mod tests {
     #[test]
     fn test_valid_db_identifiers() {
         assert!(is_valid_db_identifier("production_db"));
-        assert!(is_valid_db_identifier("mydb-test_1"));
+        assert!(is_valid_db_identifier("app-data-1"));
+        assert!(is_valid_db_identifier("wadm"));
+
         assert!(!is_valid_db_identifier(""));
-        assert!(!is_valid_db_identifier("-mydb"));
-        assert!(!is_valid_db_identifier("db; drop database x"));
-        assert!(!is_valid_db_identifier("db name"));
+        assert!(!is_valid_db_identifier("-db"));
+        assert!(!is_valid_db_identifier("db; DROP TABLE users;"));
+        assert!(!is_valid_db_identifier("db space"));
     }
 
     #[test]
     fn test_valid_backup_filenames() {
-        assert!(is_valid_backup_filename("backup_20260917.sql"));
-        assert!(is_valid_backup_filename("backup.sql.gz"));
+        assert!(is_valid_backup_filename("backup_20231010.sql"));
+        assert!(is_valid_backup_filename("mydb_dump.sql.gz"));
+
         assert!(!is_valid_backup_filename(""));
+        assert!(!is_valid_backup_filename(".hidden.sql"));
         assert!(!is_valid_backup_filename("../evil.sql"));
-        assert!(!is_valid_backup_filename("test.sh"));
+        assert!(!is_valid_backup_filename("backup.sh"));
         assert!(!is_valid_backup_filename("/etc/passwd"));
     }
 

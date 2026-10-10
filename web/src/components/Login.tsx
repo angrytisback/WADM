@@ -24,12 +24,13 @@ export default function Login() {
             const res = await fetch('/api/auth/login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
                 body: JSON.stringify({ password, code })
             });
 
             if (res.ok) {
                 const data = await res.json();
-                login(data.token);
+                login(data.token, { username: data.username, role: data.role });
                 addToast("Login successful", "success");
             } else {
                 const err = await res.json();

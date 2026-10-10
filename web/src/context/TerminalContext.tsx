@@ -2,6 +2,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { Terminal as XTerm } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { useAuth } from './AuthContext';
 
 interface TerminalContextType {
     status: 'connecting' | 'connected' | 'disconnected' | 'forbidden';
@@ -13,6 +14,8 @@ interface TerminalContextType {
 const TerminalContext = createContext<TerminalContextType | undefined>(undefined);
 
 export function TerminalProvider({ children }: { children: React.ReactNode }) {
+    const { token } = useAuth();
+    const tokenRef = useRef<string | null>(token);
     const [status, setStatus] = useState<TerminalContextType['status']>('disconnected');
     const [xterm, setXterm] = useState<XTerm | null>(null);
     const [fitAddon, setFitAddon] = useState<FitAddon | null>(null);
@@ -21,6 +24,10 @@ export function TerminalProvider({ children }: { children: React.ReactNode }) {
     const fitRef = useRef<FitAddon | null>(null);
     const wsRef = useRef<WebSocket | null>(null);
     const reconnectTimeoutRef = useRef<number | null>(null);
+
+    useEffect(() => {
+        tokenRef.current = token;
+    }, [token]);
     
     const connect = useCallback(function doConnect() {
         // Clear any pending reconnection
@@ -35,16 +42,9 @@ export function TerminalProvider({ children }: { children: React.ReactNode }) {
 
         setStatus('connecting');
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const token = localStorage.getItem('wadm_token') || '';
-        
-        if (!token) {
-            setStatus('disconnected');
-            if (xtermRef.current) xtermRef.current.writeln('\r\n\x1b[31mError: Authentication token missing. Please login again.\x1b[0m');
-            return;
-        }
-
         const wsUrl = `${protocol}//${window.location.host}/api/terminal/ws`;
-        const ws = new WebSocket(wsUrl, token);
+        const currentToken = tokenRef.current;
+        const ws = currentToken ? new WebSocket(wsUrl, currentToken) : new WebSocket(wsUrl);
         wsRef.current = ws;
 
         ws.onopen = () => {

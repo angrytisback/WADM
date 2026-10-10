@@ -111,11 +111,25 @@ fn is_valid_service_name(name: &str) -> bool {
 }
 
 pub async fn control_service(
+    user: crate::auth::AuthenticatedUser,
+    audit: web::Data<std::sync::Arc<crate::audit::AuditLogger>>,
     path: web::Path<String>,
     body: web::Json<ServiceControl>,
 ) -> impl Responder {
     let service_name = path.into_inner();
     let action = &body.action;
+
+    if user.require_operator().is_err() {
+        audit.log_denied(
+            &user,
+            "SERVICE_ACTION",
+            Some(&service_name),
+            Some("Requires Operator or Admin role"),
+        );
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "Insufficient permissions"
+        }));
+    }
 
     if !is_valid_service_name(&service_name) {
         return HttpResponse::BadRequest().json("Invalid service name");
@@ -131,11 +145,42 @@ pub async fn control_service(
 
     match output {
         Ok(out) if out.status.success() => {
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "SERVICE_ACTION",
+                Some(&service_name),
+                &user.client_ip,
+                "SUCCESS",
+                Some(&format!("Action: {}", action)),
+            );
             HttpResponse::Ok().json(format!("Service {} {}ed", service_name, action))
         }
-        Ok(out) => HttpResponse::InternalServerError()
-            .body(String::from_utf8_lossy(&out.stderr).to_string()),
-        Err(_) => HttpResponse::InternalServerError().json("Failed to execute command"),
+        Ok(out) => {
+            let err_msg = String::from_utf8_lossy(&out.stderr).to_string();
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "SERVICE_ACTION",
+                Some(&service_name),
+                &user.client_ip,
+                "FAILED",
+                Some(&err_msg),
+            );
+            HttpResponse::InternalServerError().body(err_msg)
+        }
+        Err(e) => {
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "SERVICE_ACTION",
+                Some(&service_name),
+                &user.client_ip,
+                "FAILED",
+                Some(&e.to_string()),
+            );
+            HttpResponse::InternalServerError().json("Failed to execute command")
+        }
     }
 }
 

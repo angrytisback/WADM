@@ -101,8 +101,34 @@ pub async fn get_logs() -> impl Responder {
     HttpResponse::Ok().json(&*entries)
 }
 
-pub async fn clear_logs() -> impl Responder {
+pub async fn clear_logs(
+    user: crate::auth::AuthenticatedUser,
+    audit: actix_web::web::Data<std::sync::Arc<crate::audit::AuditLogger>>,
+) -> impl Responder {
+    if user.require_admin().is_err() {
+        audit.log_denied(
+            &user,
+            "SYSTEM_CLEAR_LOGS",
+            None,
+            Some("Requires Admin role"),
+        );
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "Insufficient permissions"
+        }));
+    }
+
     let mut entries = LOG_STORE.entries.lock().unwrap_or_else(|e| e.into_inner());
     entries.clear();
+
+    audit.log(
+        &user.username,
+        user.role.as_str(),
+        "SYSTEM_CLEAR_LOGS",
+        None,
+        &user.client_ip,
+        "SUCCESS",
+        None,
+    );
+
     HttpResponse::Ok().json("Logs cleared")
 }

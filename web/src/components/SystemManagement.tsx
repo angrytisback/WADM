@@ -8,6 +8,7 @@ import { useToast } from '../context/ToastContext';
 import { useSystem } from '../context/SystemContext';
 import { useModal } from '../context/ModalContext';
 import { useServerStatus } from '../context/ServerStatusContext';
+import { useAuth } from '../context/AuthContext';
 
 interface LogEntry {
   id: string;
@@ -28,8 +29,14 @@ const SystemManagement: React.FC = () => {
   const { addToast } = useToast();
   const { systemInfo } = useSystem();
   const { triggerReboot, triggerShutdown } = useServerStatus();
-  const canManage = systemInfo?.is_root || systemInfo?.has_sudo;
-  const privilegeHint = !canManage ? "Root or Sudo privileges required for this action" : "";
+  const { isAdmin } = useAuth();
+  const hasSudo = systemInfo?.is_root || systemInfo?.has_sudo;
+  const canManage = hasSudo && isAdmin();
+  const privilegeHint = !isAdmin()
+    ? "Admin role required for system power/maintenance actions"
+    : !hasSudo
+      ? "Root or Sudo privileges required for this action"
+      : "";
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [scheduleHours, setScheduleHours] = useState<number>(0);

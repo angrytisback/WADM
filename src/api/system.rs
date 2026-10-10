@@ -13,7 +13,7 @@ pub struct SmartDisk {
     pub power_on_hours: Option<u64>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DetailedSystemInfo {
     pub os_name: String,
     pub os_version: String,
@@ -218,7 +218,27 @@ fn fetch_smart_data() -> Option<Vec<SmartDisk>> {
     }
 }
 
-pub async fn reboot_system() -> impl Responder {
+pub async fn reboot_system(
+    user: crate::auth::AuthenticatedUser,
+    audit: web::Data<std::sync::Arc<crate::audit::AuditLogger>>,
+) -> impl Responder {
+    if user.require_admin().is_err() {
+        audit.log_denied(&user, "SYSTEM_REBOOT", None, Some("Requires Admin role"));
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "Insufficient permissions"
+        }));
+    }
+
+    audit.log(
+        &user.username,
+        user.role.as_str(),
+        "SYSTEM_REBOOT",
+        None,
+        &user.client_ip,
+        "SUCCESS",
+        Some("Server reboot initiated"),
+    );
+
     actix_web::rt::spawn(async {
         tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
         let _ = Command::new("sudo")
@@ -262,11 +282,36 @@ pub async fn get_power_status() -> impl Responder {
     HttpResponse::Ok().json(get_scheduled_power_status())
 }
 
-pub async fn handle_power_action(payload: web::Json<PowerAction>) -> impl Responder {
+pub async fn handle_power_action(
+    user: crate::auth::AuthenticatedUser,
+    audit: web::Data<std::sync::Arc<crate::audit::AuditLogger>>,
+    payload: web::Json<PowerAction>,
+) -> impl Responder {
+    if user.require_admin().is_err() {
+        audit.log_denied(
+            &user,
+            "SYSTEM_POWER",
+            Some(&payload.action),
+            Some("Requires Admin role"),
+        );
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "Insufficient permissions"
+        }));
+    }
+
     let total_minutes = payload.hours.unwrap_or(0) * 60 + payload.minutes.unwrap_or(0);
 
     match payload.action.as_str() {
         "reboot" => {
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "SYSTEM_POWER",
+                Some("reboot"),
+                &user.client_ip,
+                "SUCCESS",
+                Some("Reboot initiated"),
+            );
             actix_web::rt::spawn(async {
                 tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
                 let _ = Command::new("sudo")
@@ -277,6 +322,15 @@ pub async fn handle_power_action(payload: web::Json<PowerAction>) -> impl Respon
             HttpResponse::Ok().json("Reboot initiated. Server is restarting now.")
         }
         "shutdown" => {
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "SYSTEM_POWER",
+                Some("shutdown"),
+                &user.client_ip,
+                "SUCCESS",
+                Some("Shutdown initiated"),
+            );
             actix_web::rt::spawn(async {
                 tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
                 let _ = Command::new("sudo")
@@ -292,10 +346,29 @@ pub async fn handle_power_action(payload: web::Json<PowerAction>) -> impl Respon
                 .output();
             match output {
                 Ok(o) if o.status.success() => {
+                    audit.log(
+                        &user.username,
+                        user.role.as_str(),
+                        "SYSTEM_POWER",
+                        Some("schedule_shutdown"),
+                        &user.client_ip,
+                        "SUCCESS",
+                        Some(&format!("Shutdown scheduled in {} mins", mins)),
+                    );
                     HttpResponse::Ok().json(format!("Shutdown scheduled in {} minutes.", mins))
                 }
                 Ok(o) => {
-                    HttpResponse::InternalServerError().json(String::from_utf8_lossy(&o.stderr))
+                    let err = String::from_utf8_lossy(&o.stderr).to_string();
+                    audit.log(
+                        &user.username,
+                        user.role.as_str(),
+                        "SYSTEM_POWER",
+                        Some("schedule_shutdown"),
+                        &user.client_ip,
+                        "FAILED",
+                        Some(&err),
+                    );
+                    HttpResponse::InternalServerError().json(err)
                 }
                 Err(e) => HttpResponse::InternalServerError().json(e.to_string()),
             }
@@ -307,10 +380,29 @@ pub async fn handle_power_action(payload: web::Json<PowerAction>) -> impl Respon
                 .output();
             match output {
                 Ok(o) if o.status.success() => {
+                    audit.log(
+                        &user.username,
+                        user.role.as_str(),
+                        "SYSTEM_POWER",
+                        Some("schedule_reboot"),
+                        &user.client_ip,
+                        "SUCCESS",
+                        Some(&format!("Reboot scheduled in {} mins", mins)),
+                    );
                     HttpResponse::Ok().json(format!("Reboot scheduled in {} minutes.", mins))
                 }
                 Ok(o) => {
-                    HttpResponse::InternalServerError().json(String::from_utf8_lossy(&o.stderr))
+                    let err = String::from_utf8_lossy(&o.stderr).to_string();
+                    audit.log(
+                        &user.username,
+                        user.role.as_str(),
+                        "SYSTEM_POWER",
+                        Some("schedule_reboot"),
+                        &user.client_ip,
+                        "FAILED",
+                        Some(&err),
+                    );
+                    HttpResponse::InternalServerError().json(err)
                 }
                 Err(e) => HttpResponse::InternalServerError().json(e.to_string()),
             }
@@ -319,10 +411,29 @@ pub async fn handle_power_action(payload: web::Json<PowerAction>) -> impl Respon
             let output = Command::new("sudo").args(["-n", "shutdown", "-c"]).output();
             match output {
                 Ok(o) if o.status.success() => {
+                    audit.log(
+                        &user.username,
+                        user.role.as_str(),
+                        "SYSTEM_POWER",
+                        Some("cancel"),
+                        &user.client_ip,
+                        "SUCCESS",
+                        Some("Scheduled shutdown/reboot cancelled"),
+                    );
                     HttpResponse::Ok().json("Scheduled power sequence successfully cancelled.")
                 }
                 Ok(o) => {
-                    HttpResponse::InternalServerError().json(String::from_utf8_lossy(&o.stderr))
+                    let err = String::from_utf8_lossy(&o.stderr).to_string();
+                    audit.log(
+                        &user.username,
+                        user.role.as_str(),
+                        "SYSTEM_POWER",
+                        Some("cancel"),
+                        &user.client_ip,
+                        "FAILED",
+                        Some(&err),
+                    );
+                    HttpResponse::InternalServerError().json(err)
                 }
                 Err(e) => HttpResponse::InternalServerError().json(e.to_string()),
             }
@@ -609,7 +720,23 @@ fn do_trim() -> MaintenanceResult {
     }
 }
 
-pub async fn handle_maintenance_action(payload: web::Json<MaintenanceAction>) -> impl Responder {
+pub async fn handle_maintenance_action(
+    user: crate::auth::AuthenticatedUser,
+    audit: web::Data<std::sync::Arc<crate::audit::AuditLogger>>,
+    payload: web::Json<MaintenanceAction>,
+) -> impl Responder {
+    if user.require_admin().is_err() {
+        audit.log_denied(
+            &user,
+            "SYSTEM_MAINTENANCE",
+            Some(&payload.action),
+            Some("Requires Admin role"),
+        );
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "Insufficient permissions"
+        }));
+    }
+
     let action = payload.action.clone();
 
     // Execute in tokio blocking pool to prevent blocking actix worker threads
@@ -647,18 +774,47 @@ pub async fn handle_maintenance_action(payload: web::Json<MaintenanceAction>) ->
     match result {
         Ok(res) => {
             if res.success {
+                audit.log(
+                    &user.username,
+                    user.role.as_str(),
+                    "SYSTEM_MAINTENANCE",
+                    Some(&payload.action),
+                    &user.client_ip,
+                    "SUCCESS",
+                    Some(&res.message),
+                );
                 HttpResponse::Ok().json(res)
             } else {
+                audit.log(
+                    &user.username,
+                    user.role.as_str(),
+                    "SYSTEM_MAINTENANCE",
+                    Some(&payload.action),
+                    &user.client_ip,
+                    "FAILED",
+                    Some(&res.message),
+                );
                 HttpResponse::BadRequest().json(res)
             }
         }
-        Err(e) => HttpResponse::InternalServerError().json(MaintenanceResult {
-            success: false,
-            action: payload.action.clone(),
-            message: format!("Maintenance task failed: {}", e),
-            details: e.to_string(),
-            freed_mb: None,
-        }),
+        Err(e) => {
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "SYSTEM_MAINTENANCE",
+                Some(&payload.action),
+                &user.client_ip,
+                "FAILED",
+                Some(&e.to_string()),
+            );
+            HttpResponse::InternalServerError().json(MaintenanceResult {
+                success: false,
+                action: payload.action.clone(),
+                message: format!("Maintenance task failed: {}", e),
+                details: e.to_string(),
+                freed_mb: None,
+            })
+        }
     }
 }
 
@@ -693,7 +849,17 @@ pub async fn get_dns_info() -> impl Responder {
     }
 }
 
-pub async fn flush_dns() -> impl Responder {
+pub async fn flush_dns(
+    user: crate::auth::AuthenticatedUser,
+    audit: web::Data<std::sync::Arc<crate::audit::AuditLogger>>,
+) -> impl Responder {
+    if user.require_admin().is_err() {
+        audit.log_denied(&user, "DNS_FLUSH", None, Some("Requires Admin role"));
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "Insufficient permissions"
+        }));
+    }
+
     let output = Command::new("sudo")
         .args(["-n", "resolvectl", "flush-caches"])
         .output()
@@ -706,14 +872,42 @@ pub async fn flush_dns() -> impl Responder {
     match output {
         Ok(o) => {
             if o.status.success() {
+                audit.log(
+                    &user.username,
+                    user.role.as_str(),
+                    "DNS_FLUSH",
+                    None,
+                    &user.client_ip,
+                    "SUCCESS",
+                    None,
+                );
                 HttpResponse::Ok().json("DNS cache flushed")
             } else {
-                log::warn!("DNS flush error: {}", String::from_utf8_lossy(&o.stderr));
+                let err = String::from_utf8_lossy(&o.stderr).to_string();
+                log::warn!("DNS flush error: {}", err);
+                audit.log(
+                    &user.username,
+                    user.role.as_str(),
+                    "DNS_FLUSH",
+                    None,
+                    &user.client_ip,
+                    "FAILED",
+                    Some(&err),
+                );
                 HttpResponse::InternalServerError().json("Failed to flush DNS cache")
             }
         }
         Err(e) => {
             log::error!("DNS flush command error: {}", e);
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "DNS_FLUSH",
+                None,
+                &user.client_ip,
+                "FAILED",
+                Some(&e.to_string()),
+            );
             HttpResponse::InternalServerError().json("Failed to execute DNS flush")
         }
     }
@@ -726,7 +920,22 @@ pub struct SpeedtestResult {
     pub ping_ms: f32,
 }
 
-pub async fn run_speedtest() -> impl Responder {
+pub async fn run_speedtest(
+    user: crate::auth::AuthenticatedUser,
+    audit: web::Data<std::sync::Arc<crate::audit::AuditLogger>>,
+) -> impl Responder {
+    if user.require_operator().is_err() {
+        audit.log_denied(
+            &user,
+            "SYSTEM_SPEEDTEST",
+            None,
+            Some("Requires Operator or Admin role"),
+        );
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "Insufficient permissions"
+        }));
+    }
+
     let result = actix_web::web::block(move || {
         let cmd_name = if Command::new("which").arg("speedtest-cli").output().map(|o| o.status.success()).unwrap_or(false) {
             "speedtest-cli"
@@ -758,8 +967,44 @@ pub async fn run_speedtest() -> impl Responder {
     }).await;
 
     match result {
-        Ok(Ok(res)) => HttpResponse::Ok().json(res),
-        Ok(Err(e)) => HttpResponse::BadRequest().json(e),
-        Err(_) => HttpResponse::InternalServerError().json("Speedtest execution failed"),
+        Ok(Ok(res)) => {
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "SYSTEM_SPEEDTEST",
+                None,
+                &user.client_ip,
+                "SUCCESS",
+                Some(&format!(
+                    "Down: {:.1} Mbps, Up: {:.1} Mbps",
+                    res.download_mbps, res.upload_mbps
+                )),
+            );
+            HttpResponse::Ok().json(res)
+        }
+        Ok(Err(e)) => {
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "SYSTEM_SPEEDTEST",
+                None,
+                &user.client_ip,
+                "FAILED",
+                Some(&e),
+            );
+            HttpResponse::BadRequest().json(e)
+        }
+        Err(e) => {
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "SYSTEM_SPEEDTEST",
+                None,
+                &user.client_ip,
+                "FAILED",
+                Some(&e.to_string()),
+            );
+            HttpResponse::InternalServerError().json("Speedtest execution failed")
+        }
     }
 }

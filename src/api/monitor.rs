@@ -1,13 +1,13 @@
 use actix_web::{web, HttpResponse, Responder};
 use once_cell::sync::Lazy;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json;
 use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use sysinfo::{Components, Disks, Networks, ProcessesToUpdate, System};
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct GpuStats {
     pub load: f32,
     pub vram_used: u64,
@@ -19,7 +19,7 @@ pub struct GpuStats {
     pub error: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SystemStats {
     pub cpu_usage: f32,
     pub ram_total: u64,
@@ -43,6 +43,7 @@ pub struct SystemStats {
 pub struct AppState {
     pub sys: Mutex<System>,
     pub networks: Mutex<Networks>,
+    pub metrics_sender: tokio::sync::broadcast::Sender<SystemStats>,
 }
 
 fn get_pci_gpus() -> Vec<String> {
@@ -551,10 +552,14 @@ fn get_cached_container_count() -> u32 {
     }
 }
 
-pub async fn get_system_stats(data: web::Data<AppState>) -> impl Responder {
+pub fn collect_metrics_snapshot(
+    sys_mutex: &Mutex<System>,
+    networks_mutex: &Mutex<Networks>,
+) -> SystemStats {
     let (cpu_usage, ram_total, ram_used, swap_total, swap_used) = {
-        let mut sys = data.sys.lock().unwrap_or_else(|e| e.into_inner());
-        sys.refresh_all();
+        let mut sys = sys_mutex.lock().unwrap_or_else(|e| e.into_inner());
+        sys.refresh_cpu_usage();
+        sys.refresh_memory();
         (
             sys.global_cpu_usage(),
             sys.total_memory(),
@@ -576,7 +581,7 @@ pub async fn get_system_stats(data: web::Data<AppState>) -> impl Responder {
     };
 
     let (network_rx, network_tx) = {
-        let mut networks = data.networks.lock().unwrap_or_else(|e| e.into_inner());
+        let mut networks = networks_mutex.lock().unwrap_or_else(|e| e.into_inner());
         networks.refresh(true);
         let mut rx = 0;
         let mut tx = 0;
@@ -603,27 +608,14 @@ pub async fn get_system_stats(data: web::Data<AppState>) -> impl Responder {
         temp
     };
 
-    let (
-        active_services,
-        failed_services,
-        active_containers,
-        upgradable_packages,
-        network_interface,
-        network_max_speed,
-        gpus,
-    ) = actix_web::web::block(move || {
-        let (active, failed) = get_cached_service_counts();
-        let containers = get_cached_container_count();
-        let pkgs = crate::api::pkgmgr::count_upgradable_packages();
-        let iface = get_default_interface();
-        let speed = get_interface_speed(&iface);
-        let gpus = get_gpu_stats();
-        (active, failed, containers, pkgs, iface, speed, gpus)
-    })
-    .await
-    .unwrap_or((0, 0, 0, 0, String::new(), 0, Vec::new()));
+    let (active, failed) = get_cached_service_counts();
+    let containers = get_cached_container_count();
+    let pkgs = crate::api::pkgmgr::count_upgradable_packages();
+    let iface = get_default_interface();
+    let speed = get_interface_speed(&iface);
+    let gpus = get_gpu_stats();
 
-    let stats = SystemStats {
+    SystemStats {
         cpu_usage,
         ram_total,
         ram_used,
@@ -633,15 +625,86 @@ pub async fn get_system_stats(data: web::Data<AppState>) -> impl Responder {
         disk_used,
         network_rx,
         network_tx,
-        active_services,
-        failed_services,
-        active_containers,
-        upgradable_packages,
-        network_interface,
-        network_max_speed,
+        active_services: active,
+        failed_services: failed,
+        active_containers: containers,
+        upgradable_packages: pkgs,
+        network_interface: iface,
+        network_max_speed: speed,
         gpus,
         cpu_temp,
-    };
+    }
+}
+
+pub fn start_telemetry_loop(app_state: web::Data<AppState>) {
+    tokio::spawn(async move {
+        log::info!("Starting background telemetry daemon (1s interval)...");
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            interval.tick().await;
+
+            let state_clone = app_state.clone();
+            let stats = tokio::task::spawn_blocking(move || {
+                collect_metrics_snapshot(&state_clone.sys, &state_clone.networks)
+            })
+            .await;
+
+            if let Ok(snapshot) = stats {
+                let _ = app_state.metrics_sender.send(snapshot);
+            }
+        }
+    });
+}
+
+pub async fn get_stats_stream(data: web::Data<AppState>) -> impl Responder {
+    let rx = data.metrics_sender.subscribe();
+
+    let stream = futures_util::stream::unfold(rx, |mut rx| async move {
+        loop {
+            match rx.recv().await {
+                Ok(stats) => {
+                    let json = serde_json::to_string(&stats).unwrap_or_default();
+                    let sse_event = format!("data: {}\n\n", json);
+                    return Some((
+                        Ok::<actix_web::web::Bytes, actix_web::Error>(actix_web::web::Bytes::from(
+                            sse_event,
+                        )),
+                        rx,
+                    ));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                    log::debug!(
+                        "Telemetry stream subscriber lagged by {} messages, continuing...",
+                        missed
+                    );
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    log::info!("Telemetry broadcast channel closed, terminating SSE stream.");
+                    return None;
+                }
+            }
+        }
+    });
+
+    HttpResponse::Ok()
+        .insert_header((actix_web::http::header::CONTENT_TYPE, "text/event-stream"))
+        .insert_header((
+            actix_web::http::header::CACHE_CONTROL,
+            "no-cache, no-transform",
+        ))
+        .insert_header((actix_web::http::header::CONNECTION, "keep-alive"))
+        .insert_header(("X-Accel-Buffering", "no"))
+        .streaming(stream)
+}
+
+pub async fn get_system_stats(data: web::Data<AppState>) -> impl Responder {
+    let state_clone = data.clone();
+    let stats = actix_web::web::block(move || {
+        collect_metrics_snapshot(&state_clone.sys, &state_clone.networks)
+    })
+    .await
+    .unwrap_or_else(|_| collect_metrics_snapshot(&data.sys, &data.networks));
 
     HttpResponse::Ok().json(stats)
 }
@@ -683,8 +746,24 @@ pub struct ProcessAction {
     pub signal: String,
 }
 
-pub async fn kill_process(body: web::Json<ProcessAction>) -> impl Responder {
+pub async fn kill_process(
+    user: crate::auth::AuthenticatedUser,
+    audit: web::Data<std::sync::Arc<crate::audit::AuditLogger>>,
+    body: web::Json<ProcessAction>,
+) -> impl Responder {
     let pid = body.pid;
+
+    if user.require_operator().is_err() {
+        audit.log_denied(
+            &user,
+            "PROCESS_KILL",
+            Some(&pid.to_string()),
+            Some("Requires Operator or Admin role"),
+        );
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "Insufficient permissions"
+        }));
+    }
 
     // Protect system init (PID 1) and invalid PIDs
     if pid <= 1 {
@@ -714,14 +793,42 @@ pub async fn kill_process(body: web::Json<ProcessAction>) -> impl Responder {
     match output {
         Ok(o) => {
             if o.status.success() {
+                audit.log(
+                    &user.username,
+                    user.role.as_str(),
+                    "PROCESS_KILL",
+                    Some(&pid.to_string()),
+                    &user.client_ip,
+                    "SUCCESS",
+                    Some(&format!("Signal: {}", signal)),
+                );
                 HttpResponse::Ok().json(format!("Process {} signal {} sent", pid, signal))
             } else {
-                log::warn!("Process kill error: {}", String::from_utf8_lossy(&o.stderr));
+                let err = String::from_utf8_lossy(&o.stderr).to_string();
+                log::warn!("Process kill error: {}", err);
+                audit.log(
+                    &user.username,
+                    user.role.as_str(),
+                    "PROCESS_KILL",
+                    Some(&pid.to_string()),
+                    &user.client_ip,
+                    "FAILED",
+                    Some(&err),
+                );
                 HttpResponse::InternalServerError().json("Failed to kill process")
             }
         }
         Err(e) => {
             log::error!("Failed to execute kill: {}", e);
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "PROCESS_KILL",
+                Some(&pid.to_string()),
+                &user.client_ip,
+                "FAILED",
+                Some(&e.to_string()),
+            );
             HttpResponse::InternalServerError().json("Failed to execute kill command")
         }
     }
@@ -742,5 +849,34 @@ eth0\t0001A8C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n";
         let no_default = "Iface\tDestination\tGateway\tFlags\n\
 wlan0\t0001A8C0\t00000000\t0001\n";
         assert_eq!(parse_route_table(no_default), None);
+    }
+
+    #[tokio::test]
+    async fn test_telemetry_broadcast_channel() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<SystemStats>(8);
+        let sample_stats = SystemStats {
+            cpu_usage: 25.5,
+            ram_total: 16000000,
+            ram_used: 8000000,
+            swap_total: 4000000,
+            swap_used: 1000000,
+            disk_total: 500000000,
+            disk_used: 250000000,
+            network_rx: 1024,
+            network_tx: 2048,
+            active_services: 10,
+            failed_services: 0,
+            active_containers: 2,
+            upgradable_packages: 5,
+            network_interface: "eth0".to_string(),
+            network_max_speed: 1000,
+            gpus: Vec::new(),
+            cpu_temp: 45.0,
+        };
+
+        tx.send(sample_stats.clone()).expect("Failed to send stats");
+        let received = rx.recv().await.expect("Failed to receive stats");
+        assert_eq!(received.cpu_usage, 25.5);
+        assert_eq!(received.network_interface, "eth0");
     }
 }

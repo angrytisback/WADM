@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
+import { FaDocker } from 'react-icons/fa';
 import { useToast } from '../context/ToastContext';
 import { useSystem } from '../context/SystemContext';
 import { useModal } from '../context/ModalContext';
+import { useAuth } from '../context/AuthContext';
 
 
 interface Container {
@@ -28,8 +30,10 @@ export default function Docker() {
     const [actionState, setActionState] = useState<{ id: string, action: string } | string | null>(null);
     const { addToast } = useToast();
     const { systemInfo } = useSystem();
-    const canManage = systemInfo?.is_root || systemInfo?.has_sudo;
-    const privilegeHint = !canManage ? "Root or Sudo privileges required for this action" : "";
+    const { canOperate, isAdmin } = useAuth();
+    const hasSudo = systemInfo?.is_root || systemInfo?.has_sudo;
+    const canManage = hasSudo;
+    const privilegeHint = !hasSudo ? "Root or Sudo privileges required for this action" : "";
 
     const fetchContainers = useCallback(async () => {
         try {
@@ -177,7 +181,7 @@ export default function Docker() {
     if (!status?.installed) {
         return (
             <div className="glass-panel fade-in" style={{ padding: '3rem', textAlign: 'center' }}>
-                <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>🐳</div>
+                <div style={{ fontSize: '3rem', marginBottom: '1rem', color: 'var(--accent-color)' }}><FaDocker /></div>
                 <h3 style={{ marginBottom: '1rem' }}>Docker Not Found</h3>
                 <p style={{ color: 'var(--text-secondary)', marginBottom: '2rem', maxWidth: '400px', marginInline: 'auto' }}>
                     Docker is not installed on this system. You can install it automatically using the button below.
@@ -185,9 +189,9 @@ export default function Docker() {
                 <button
                     className="btn-primary"
                     onClick={installDocker}
-                    disabled={actionState === 'installing' || !canManage}
-                    title={privilegeHint}
-                    style={{ display: 'flex', alignItems: 'center', gap: '0.8rem', marginInline: 'auto', opacity: !canManage ? 0.5 : 1 }}
+                    disabled={actionState === 'installing' || !canManage || !isAdmin()}
+                    title={!isAdmin() ? "Admin role required to install Docker" : privilegeHint}
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.8rem', marginInline: 'auto', opacity: (!canManage || !isAdmin()) ? 0.5 : 1 }}
                 >
                     {actionState === 'installing' && <span className="spinner"></span>}
                     {actionState === 'installing' ? 'Installing Docker...' : 'Install Docker Automatically'}
@@ -199,7 +203,7 @@ export default function Docker() {
     if (!status?.running) {
         return (
             <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center' }}>
-                <div style={{ fontSize: '3rem', marginBottom: '1rem', filter: 'grayscale(1)' }}>🐳</div>
+                <div style={{ fontSize: '3rem', marginBottom: '1rem', color: 'var(--text-secondary)' }}><FaDocker /></div>
                 <h3>Docker Service Stopped</h3>
                 <p style={{ color: 'var(--text-secondary)', marginBottom: '2rem' }}>
                     The Docker service is installed ({status.version}) but not currently running.
@@ -207,9 +211,9 @@ export default function Docker() {
                 <button
                     className="btn-primary"
                     onClick={startService}
-                    disabled={actionState === 'service' || !canManage}
-                    title={privilegeHint}
-                    style={{ display: 'flex', alignItems: 'center', gap: '0.8rem', marginInline: 'auto', opacity: !canManage ? 0.5 : 1 }}
+                    disabled={actionState === 'service' || !canManage || !canOperate()}
+                    title={!canOperate() ? "Operator role required to start Docker service" : privilegeHint}
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.8rem', marginInline: 'auto', opacity: (!canManage || !canOperate()) ? 0.5 : 1 }}
                 >
                     {actionState === 'service' && <span className="spinner"></span>}
                     {actionState === 'service' ? 'Starting...' : 'Start Docker Service'}
@@ -269,9 +273,9 @@ export default function Docker() {
                                                 <button
                                                     className="btn-sm"
                                                     onClick={() => handleAction(c.id, 'restart')}
-                                                    disabled={!!actionState || !canManage}
-                                                    title={privilegeHint}
-                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: !canManage ? 0.5 : 1 }}
+                                                    disabled={!!actionState || !canManage || !canOperate()}
+                                                    title={!canOperate() ? "Operator role required to restart container" : privilegeHint}
+                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: (!canManage || !canOperate()) ? 0.5 : 1 }}
                                                 >
                                                     {typeof actionState === 'object' && actionState?.id === c.id && actionState.action === 'restart' && <span className="spinner" style={{ width: '0.8rem', height: '0.8rem' }}></span>}
                                                     Restart
@@ -279,9 +283,9 @@ export default function Docker() {
                                                 <button
                                                     className="btn-sm danger"
                                                     onClick={() => handleAction(c.id, 'stop')}
-                                                    disabled={!!actionState || !canManage}
-                                                    title={privilegeHint}
-                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: !canManage ? 0.5 : 1 }}
+                                                    disabled={!!actionState || !canManage || !canOperate()}
+                                                    title={!canOperate() ? "Operator role required to stop container" : privilegeHint}
+                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: (!canManage || !canOperate()) ? 0.5 : 1 }}
                                                 >
                                                     {typeof actionState === 'object' && actionState?.id === c.id && actionState.action === 'stop' && <span className="spinner" style={{ width: '0.8rem', height: '0.8rem' }}></span>}
                                                     Stop
@@ -292,9 +296,9 @@ export default function Docker() {
                                                 <button
                                                     className="btn-sm success"
                                                     onClick={() => handleAction(c.id, 'start')}
-                                                    disabled={!!actionState || !canManage}
-                                                    title={privilegeHint}
-                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: !canManage ? 0.5 : 1 }}
+                                                    disabled={!!actionState || !canManage || !canOperate()}
+                                                    title={!canOperate() ? "Operator role required to start container" : privilegeHint}
+                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: (!canManage || !canOperate()) ? 0.5 : 1 }}
                                                 >
                                                     {typeof actionState === 'object' && actionState?.id === c.id && actionState.action === 'start' && <span className="spinner" style={{ width: '0.8rem', height: '0.8rem' }}></span>}
                                                     Start
@@ -312,9 +316,9 @@ export default function Docker() {
                                                             handleAction(c.id, 'remove');
                                                         }
                                                     }}
-                                                    disabled={!!actionState || !canManage}
-                                                    title={privilegeHint}
-                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: !canManage ? 0.5 : 1 }}
+                                                    disabled={!!actionState || !canManage || !isAdmin()}
+                                                    title={!isAdmin() ? "Admin role required to delete container" : privilegeHint}
+                                                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: (!canManage || !isAdmin()) ? 0.5 : 1 }}
                                                 >
                                                     {typeof actionState === 'object' && actionState?.id === c.id && actionState.action === 'remove' && <span className="spinner" style={{ width: '0.8rem', height: '0.8rem' }}></span>}
                                                     Delete

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useDependencies } from '../context/DependencyContext';
 import { useToast } from '../context/ToastContext';
 import { useSystem } from '../context/SystemContext';
-import { FaDownload } from 'react-icons/fa';
+import { FaDownload, FaSync } from 'react-icons/fa';
 
 export function DependencyModal() {
     const { report, loading, refreshDependencies } = useDependencies();
@@ -120,7 +120,7 @@ export function DependencyModal() {
                                 }}
                             >
                                 {installing === dep.name ? (
-                                    <span className="spin">⟳</span>
+                                    <FaSync className="spin" />
                                 ) : (
                                     <FaDownload />
                                 )}

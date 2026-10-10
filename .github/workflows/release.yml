@@ -14,11 +14,11 @@ jobs:
     name: Build Binary (${{ matrix.target }})
     runs-on: ubuntu-24.04
     strategy:
+      fail-fast: false
       matrix:
         target:
           - x86_64-unknown-linux-gnu
           - aarch64-unknown-linux-gnu
-          - riscv64gc-unknown-linux-gnu
 
     steps:
       - name: Checkout
@@ -31,7 +31,7 @@ jobs:
           cache: "npm"
           cache-dependency-path: web/package-lock.json
 
-      - name: Build frontend
+      - name: Build frontend assets
         working-directory: web
         run: |
           npm ci
@@ -48,27 +48,35 @@ jobs:
           key: release-${{ matrix.target }}
 
       - name: Install cross
-        run: cargo install cross --locked --git https://github.com/cross-rs/cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
 
-      - name: Build backend
+      - name: Build backend binary
         run: cross build --release --target ${{ matrix.target }}
 
-      - name: Package artifact
+      - name: Package release archive and checksum
         run: |
           ARTIFACT_NAME="wadm-${{ github.ref_name }}-${{ matrix.target }}"
-          mkdir -p dist
-          cp target/${{ matrix.target }}/release/wadm dist/wadm
-          tar -czf "dist/${ARTIFACT_NAME}.tar.gz" -C dist wadm
-          echo "ARTIFACT_PATH=dist/${ARTIFACT_NAME}.tar.gz" >> $GITHUB_ENV
+          mkdir -p dist/pkg
+          cp target/${{ matrix.target }}/release/wadm dist/pkg/wadm
+          tar -czf "dist/${ARTIFACT_NAME}.tar.gz" -C dist/pkg wadm
+          cd dist
+          sha256sum "${ARTIFACT_NAME}.tar.gz" > "${ARTIFACT_NAME}.tar.gz.sha256"
+          echo "ARCHIVE_PATH=dist/${ARTIFACT_NAME}.tar.gz" >> $GITHUB_ENV
+          echo "CHECKSUM_PATH=dist/${ARTIFACT_NAME}.tar.gz.sha256" >> $GITHUB_ENV
 
-      - name: Upload release asset
+      - name: Upload release assets to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.ARTIFACT_PATH }}
+          files: |
+            ${{ env.ARCHIVE_PATH }}
+            ${{ env.CHECKSUM_PATH }}
 
   build-docker:
     name: Docker Image (multi-arch)
     runs-on: ubuntu-24.04
+    needs: [build-binaries]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -96,7 +104,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
 
-      - name: Build and push
+      - name: Build and push container image
         uses: docker/build-push-action@v6
         with:
           context: .

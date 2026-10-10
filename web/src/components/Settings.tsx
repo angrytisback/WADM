@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
 import { useToast } from '../context/ToastContext';
 import { useStats } from '../context/StatsContext';
-import { FaTools, FaClock, FaShieldAlt, FaInfoCircle } from 'react-icons/fa';
+import { useAuth } from '../context/AuthContext';
+import { FaTools, FaClock, FaShieldAlt, FaInfoCircle, FaCog, FaLock } from 'react-icons/fa';
+import SSLManagement from './SSLManagement';
 
 interface Config {
     developer_mode: boolean;
@@ -10,8 +12,10 @@ interface Config {
 export default function Settings() {
     const [config, setConfig] = useState<Config | null>(null);
     const [loading, setLoading] = useState(false);
+    const [settingsTab, setSettingsTab] = useState<'general' | 'ssl'>('general');
     const { addToast } = useToast();
     const { refreshInterval, setRefreshInterval } = useStats();
+    const { isAdmin } = useAuth();
 
     useEffect(() => {
         fetch('/api/config')
@@ -49,11 +53,43 @@ export default function Settings() {
     if (!config) return <div style={{ padding: '2rem' }}>Loading settings...</div>;
 
     return (
-        <div style={{ padding: '2rem', maxWidth: '800px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '2rem' }}>
-            <h1 style={{ fontSize: '2rem', fontWeight: 700, margin: 0 }}>System Settings</h1>
+        <div style={{ padding: '2rem', maxWidth: '1000px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+                <h1 style={{ fontSize: '2rem', fontWeight: 700, margin: 0 }}>System Settings</h1>
+                <div style={{ display: 'flex', gap: '0.5rem', background: 'rgba(0,0,0,0.2)', padding: '4px', borderRadius: '10px' }}>
+                    <button
+                        onClick={() => setSettingsTab('general')}
+                        style={{
+                            display: 'flex', alignItems: 'center', gap: '0.5rem',
+                            padding: '0.5rem 1rem', borderRadius: '8px', border: 'none',
+                            background: settingsTab === 'general' ? 'var(--accent-color, #38bdf8)' : 'transparent',
+                            color: settingsTab === 'general' ? '#0f172a' : 'var(--text-secondary)',
+                            fontWeight: 600, cursor: 'pointer', transition: 'all 0.2s', fontSize: '0.9rem'
+                        }}
+                    >
+                        <FaCog /> General
+                    </button>
+                    <button
+                        onClick={() => setSettingsTab('ssl')}
+                        style={{
+                            display: 'flex', alignItems: 'center', gap: '0.5rem',
+                            padding: '0.5rem 1rem', borderRadius: '8px', border: 'none',
+                            background: settingsTab === 'ssl' ? 'var(--accent-color, #38bdf8)' : 'transparent',
+                            color: settingsTab === 'ssl' ? '#0f172a' : 'var(--text-secondary)',
+                            fontWeight: 600, cursor: 'pointer', transition: 'all 0.2s', fontSize: '0.9rem'
+                        }}
+                    >
+                        <FaLock /> SSL / TLS
+                    </button>
+                </div>
+            </div>
 
-            {/* Performance & Polling Interval */}
-            <div className="glass-panel" style={{ padding: '2rem' }}>
+            {settingsTab === 'ssl' ? (
+                <SSLManagement />
+            ) : (
+                <>
+                    {/* Performance & Polling Interval */}
+                    <div className="glass-panel" style={{ padding: '2rem' }}>
                 <h2 style={{ fontSize: '1.25rem', fontWeight: 600, marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                     <FaClock /> Metric Refresh Frequency
                 </h2>
@@ -109,17 +145,18 @@ export default function Settings() {
 
                     <button
                         onClick={toggleDevMode}
-                        disabled={loading}
+                        disabled={loading || !isAdmin()}
+                        title={!isAdmin() ? "Admin role required to toggle developer mode" : ""}
                         style={{
                             background: config.developer_mode ? '#10b981' : '#374151',
                             color: 'white',
                             border: 'none',
                             padding: '0.75rem 1.5rem',
                             borderRadius: '8px',
-                            cursor: loading ? 'not-allowed' : 'pointer',
+                            cursor: (loading || !isAdmin()) ? 'not-allowed' : 'pointer',
                             fontWeight: 600,
                             transition: 'all 0.2s',
-                            opacity: loading ? 0.7 : 1
+                            opacity: loading ? 0.7 : !isAdmin() ? 0.5 : 1
                         }}
                     >
                         {config.developer_mode ? 'Enabled' : 'Disabled'}
@@ -141,6 +178,8 @@ export default function Settings() {
                     </div>
                 </div>
             </div>
+            </>
+            )}
         </div>
     );
 }

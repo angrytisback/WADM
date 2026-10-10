@@ -4,6 +4,7 @@ import { SplitCircularProgress } from './SplitCircularProgress';
 import type { SystemStats, GpuStats } from '../types';
 import { useToast } from '../context/ToastContext';
 import { useSystem } from '../context/SystemContext';
+import { useJobs } from '../context/JobContext';
 
 interface DashboardProps {
     stats: SystemStats | null;
@@ -30,6 +31,7 @@ const Icons = {
 export default function Dashboard({ stats, onNavigate }: DashboardProps) {
     const { addToast } = useToast();
     const { systemInfo } = useSystem();
+    const { trackJob } = useJobs();
     const canManage = systemInfo?.is_root || systemInfo?.has_sudo;
     const privilegeHint = !canManage ? "Root or Sudo privileges required" : "";
     const [updatingAll, setUpdatingAll] = useState(false);
@@ -129,7 +131,7 @@ export default function Dashboard({ stats, onNavigate }: DashboardProps) {
                                 }}
                                 title={!canManage ? privilegeHint : "Quickly drop PageCache, dentries, and inodes to reclaim RAM"}
                             >
-                                ⚡ {flushingMem ? 'Flushing...' : 'Flush RAM'}
+                                {flushingMem ? 'Flushing...' : 'Flush RAM'}
                             </button>
                             <span onClick={() => onNavigate('usage')} style={{ fontSize: '0.9rem', color: 'var(--accent-color)', fontWeight: 500, cursor: 'pointer' }}>View Details →</span>
                         </div>
@@ -246,7 +248,11 @@ export default function Dashboard({ stats, onNavigate }: DashboardProps) {
                                 try {
                                     const res = await fetch('/api/packages/update-all', { method: 'POST' });
                                     if (res.ok) {
-                                        addToast('System update started. This may take a while.', 'success');
+                                        const data = await res.json();
+                                        if (data && data.job_id) {
+                                            trackJob(data.job_id, 'System Packages Upgrade');
+                                        }
+                                        addToast('System update started.', 'success');
                                     } else {
                                         addToast('Failed to start update.', 'error');
                                     }

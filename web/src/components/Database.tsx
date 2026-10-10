@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from 'react';
 import { useToast } from '../context/ToastContext';
 import { useSystem } from '../context/SystemContext';
 import { useModal } from '../context/ModalContext';
+import { useJobs } from '../context/JobContext';
+import { useAuth } from '../context/AuthContext';
 import { 
     FaDatabase, FaTable, FaCode, FaPlay, FaChevronRight, 
     FaChevronDown, FaSync, FaHistory, FaSearch, FaDatabase as FaDbIcon,
@@ -35,6 +37,8 @@ export default function Database() {
     const { addToast } = useToast();
     const { confirm } = useModal();
     const { systemInfo } = useSystem();
+    const { trackJob } = useJobs();
+    const { canOperate, isAdmin } = useAuth();
     const canManage = systemInfo?.is_root || systemInfo?.has_sudo;
     
     // State
@@ -196,7 +200,11 @@ export default function Database() {
             const url = `/api/db/${selectedEntity.engine}/${selectedEntity.db}/backup${selectedEntity.container_id ? `?container_id=${selectedEntity.container_id}` : ''}`;
             const res = await fetch(url, { method: 'POST' });
             if (res.ok) {
-                addToast("Backup created successfully", "success");
+                const data = await res.json();
+                if (data && data.job_id) {
+                    trackJob(data.job_id, `Database Backup (${selectedEntity.db})`);
+                }
+                addToast("Database backup started", "success");
                 fetchBackups(selectedEntity.engine, selectedEntity.db);
             } else {
                 addToast("Failed to create backup", "error");
@@ -557,17 +565,19 @@ export default function Database() {
                                                         <div style={{ display: 'flex', gap: '0.4rem', justifyContent: 'center' }}>
                                                             <button 
                                                                 className="btn-text" 
-                                                                title="Edit Row"
+                                                                title={!isAdmin() ? "Admin role required to edit rows" : "Edit Row"}
+                                                                disabled={!isAdmin()}
                                                                 onClick={() => setEditingRow({ index: ri, values: [...row] })}
-                                                                style={{ padding: '0.2rem', fontSize: '0.75rem', color: 'var(--accent-color)' }}
+                                                                style={{ padding: '0.2rem', fontSize: '0.75rem', color: 'var(--accent-color)', opacity: !isAdmin() ? 0.4 : 1, cursor: !isAdmin() ? 'not-allowed' : 'pointer' }}
                                                             >
                                                                 <FaEdit />
                                                             </button>
                                                             <button 
                                                                 className="btn-text danger" 
-                                                                title="Delete Row"
+                                                                title={!isAdmin() ? "Admin role required to delete rows" : "Delete Row"}
+                                                                disabled={!isAdmin()}
                                                                 onClick={() => deleteRow(ri)}
-                                                                style={{ padding: '0.2rem', fontSize: '0.75rem' }}
+                                                                style={{ padding: '0.2rem', fontSize: '0.75rem', opacity: !isAdmin() ? 0.4 : 1, cursor: !isAdmin() ? 'not-allowed' : 'pointer' }}
                                                             >
                                                                 <FaTrash />
                                                             </button>
@@ -610,8 +620,9 @@ export default function Database() {
                                 <button 
                                     className="btn-primary" 
                                     onClick={() => runQuery()}
-                                    disabled={executing || !sqlQuery.trim() || !selectedEntity}
-                                    style={{ position: 'absolute', bottom: '1rem', right: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+                                    disabled={executing || !sqlQuery.trim() || !selectedEntity || !isAdmin()}
+                                    title={!isAdmin() ? "Admin role required to execute SQL queries" : ""}
+                                    style={{ position: 'absolute', bottom: '1rem', right: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: !isAdmin() ? 0.5 : 1 }}
                                 >
                                     {executing ? <span className="spinner"></span> : <FaPlay />}
                                     Run Query
@@ -656,12 +667,12 @@ export default function Database() {
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
                                 <h3>Database Backups</h3>
                                 <div style={{ display: 'flex', gap: '0.8rem' }}>
-                                    <label className={`btn-primary ${uploading ? 'disabled' : ''}`} style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', margin: 0 }}>
+                                    <label className={`btn-primary ${uploading || !isAdmin() ? 'disabled' : ''}`} title={!isAdmin() ? "Admin role required to import SQL backups" : ""} style={{ cursor: !isAdmin() ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', margin: 0, opacity: !isAdmin() ? 0.5 : 1 }}>
                                         {uploading ? <span className="spinner"></span> : <FaUpload style={{ marginRight: '0.5rem' }} />}
                                         Import SQL File
-                                        <input type="file" accept=".sql" onChange={handleUpload} style={{ display: 'none' }} disabled={uploading || !selectedEntity} />
+                                        <input type="file" accept=".sql" onChange={handleUpload} style={{ display: 'none' }} disabled={uploading || !selectedEntity || !isAdmin()} />
                                     </label>
-                                    <button className="btn-primary" onClick={handleCreateBackup} disabled={creatingBackup || !selectedEntity}>
+                                    <button className="btn-primary" onClick={handleCreateBackup} disabled={creatingBackup || !selectedEntity || !canOperate()} title={!canOperate() ? "Operator role required to create backup" : ""} style={{ opacity: !canOperate() ? 0.5 : 1 }}>
                                         {creatingBackup ? <span className="spinner"></span> : <FaSave style={{ marginRight: '0.5rem' }} />}
                                         Take Instant Backup
                                     </button>
@@ -696,8 +707,10 @@ export default function Database() {
                                                         <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
                                                             <button 
                                                                 className="btn-sm success" 
-                                                                title="Restore" 
+                                                                title={!isAdmin() ? "Admin role required to restore database" : "Restore"} 
+                                                                disabled={!isAdmin()}
                                                                 onClick={() => handleRestoreBackup(b.filename)}
+                                                                style={{ opacity: !isAdmin() ? 0.5 : 1 }}
                                                             >
                                                                 <FaUndo /> Restore
                                                             </button>
@@ -711,8 +724,10 @@ export default function Database() {
                                                             </button>
                                                             <button 
                                                                 className="btn-sm danger" 
-                                                                title="Delete" 
+                                                                title={!isAdmin() ? "Admin role required to delete backup" : "Delete"} 
+                                                                disabled={!isAdmin()}
                                                                 onClick={() => handleDeleteBackup(b.filename)}
+                                                                style={{ opacity: !isAdmin() ? 0.5 : 1 }}
                                                             >
                                                                 <FaTrash />
                                                             </button>

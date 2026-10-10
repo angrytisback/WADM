@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useToast } from '../context/ToastContext';
 import { useSystem } from '../context/SystemContext';
+import { useAuth } from '../context/AuthContext';
 
 interface Package {
     name: string;
@@ -18,8 +19,14 @@ export default function Packages() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const { systemInfo } = useSystem();
-    const canManage = systemInfo?.is_root || systemInfo?.has_sudo;
-    const privilegeHint = !canManage ? "Root or Sudo privileges required for this action" : "";
+    const { isAdmin } = useAuth();
+    const hasSudo = systemInfo?.is_root || systemInfo?.has_sudo;
+    const canManage = hasSudo && isAdmin();
+    const privilegeHint = !isAdmin()
+        ? "Admin role required for package management"
+        : !hasSudo
+            ? "Root or Sudo privileges required for this action"
+            : "";
 
     // Replaced single boolean with specific action tracking
     const [actionState, setActionState] = useState<{ type: 'update' | 'install' | 'remove', target?: string } | null>(null);
@@ -38,10 +45,7 @@ export default function Packages() {
         setError(null);
         try {
             const endpoint = activeTab === 'updates' ? '/api/packages' : '/api/packages/installed';
-            const token = localStorage.getItem('wadm_token');
-            const headers: HeadersInit = token ? { 'Authorization': `Bearer ${token}` } : {};
-
-            const res = await fetch(endpoint, { headers });
+            const res = await fetch(endpoint, { credentials: 'include' });
             if (res.ok) {
                 const data = await res.json();
                 if (Array.isArray(data)) {

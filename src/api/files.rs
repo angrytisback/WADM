@@ -278,7 +278,23 @@ pub async fn read_file(query: web::Query<FileRequest>) -> impl Responder {
     }
 }
 
-pub async fn write_file(body: web::Json<FileWriteRequest>) -> impl Responder {
+pub async fn write_file(
+    user: crate::auth::AuthenticatedUser,
+    audit: web::Data<std::sync::Arc<crate::audit::AuditLogger>>,
+    body: web::Json<FileWriteRequest>,
+) -> impl Responder {
+    if user.require_operator().is_err() {
+        audit.log_denied(
+            &user,
+            "FILE_WRITE",
+            Some(&body.path),
+            Some("Requires Operator or Admin role"),
+        );
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "Insufficient permissions"
+        }));
+    }
+
     let path = match validate_and_sanitize_path(&body.path, true) {
         Ok(p) => p,
         Err(err) => return HttpResponse::BadRequest().json(err),
@@ -289,12 +305,50 @@ pub async fn write_file(body: web::Json<FileWriteRequest>) -> impl Responder {
     }
 
     match fs::write(&path, &body.content) {
-        Ok(_) => HttpResponse::Ok().json("File saved successfully"),
-        Err(e) => HttpResponse::InternalServerError().json(format!("Failed to save file: {}", e)),
+        Ok(_) => {
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "FILE_WRITE",
+                Some(&body.path),
+                &user.client_ip,
+                "SUCCESS",
+                None,
+            );
+            HttpResponse::Ok().json("File saved successfully")
+        }
+        Err(e) => {
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "FILE_WRITE",
+                Some(&body.path),
+                &user.client_ip,
+                "FAILED",
+                Some(&e.to_string()),
+            );
+            HttpResponse::InternalServerError().json(format!("Failed to save file: {}", e))
+        }
     }
 }
 
-pub async fn create_item(body: web::Json<FileCreateRequest>) -> impl Responder {
+pub async fn create_item(
+    user: crate::auth::AuthenticatedUser,
+    audit: web::Data<std::sync::Arc<crate::audit::AuditLogger>>,
+    body: web::Json<FileCreateRequest>,
+) -> impl Responder {
+    if user.require_operator().is_err() {
+        audit.log_denied(
+            &user,
+            "FILE_CREATE",
+            Some(&body.path),
+            Some("Requires Operator or Admin role"),
+        );
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "Insufficient permissions"
+        }));
+    }
+
     let path = match validate_and_sanitize_path(&body.path, true) {
         Ok(p) => p,
         Err(err) => return HttpResponse::BadRequest().json(err),
@@ -306,21 +360,79 @@ pub async fn create_item(body: web::Json<FileCreateRequest>) -> impl Responder {
 
     if body.is_dir {
         match fs::create_dir_all(&path) {
-            Ok(_) => HttpResponse::Ok().json("Directory created successfully"),
-            Err(e) => HttpResponse::InternalServerError()
-                .json(format!("Failed to create directory: {}", e)),
+            Ok(_) => {
+                audit.log(
+                    &user.username,
+                    user.role.as_str(),
+                    "FILE_CREATE",
+                    Some(&body.path),
+                    &user.client_ip,
+                    "SUCCESS",
+                    Some("Directory created"),
+                );
+                HttpResponse::Ok().json("Directory created successfully")
+            }
+            Err(e) => {
+                audit.log(
+                    &user.username,
+                    user.role.as_str(),
+                    "FILE_CREATE",
+                    Some(&body.path),
+                    &user.client_ip,
+                    "FAILED",
+                    Some(&e.to_string()),
+                );
+                HttpResponse::InternalServerError()
+                    .json(format!("Failed to create directory: {}", e))
+            }
         }
     } else {
         match fs::File::create(&path) {
-            Ok(_) => HttpResponse::Ok().json("File created successfully"),
+            Ok(_) => {
+                audit.log(
+                    &user.username,
+                    user.role.as_str(),
+                    "FILE_CREATE",
+                    Some(&body.path),
+                    &user.client_ip,
+                    "SUCCESS",
+                    Some("File created"),
+                );
+                HttpResponse::Ok().json("File created successfully")
+            }
             Err(e) => {
+                audit.log(
+                    &user.username,
+                    user.role.as_str(),
+                    "FILE_CREATE",
+                    Some(&body.path),
+                    &user.client_ip,
+                    "FAILED",
+                    Some(&e.to_string()),
+                );
                 HttpResponse::InternalServerError().json(format!("Failed to create file: {}", e))
             }
         }
     }
 }
 
-pub async fn delete_item(query: web::Query<FileRequest>) -> impl Responder {
+pub async fn delete_item(
+    user: crate::auth::AuthenticatedUser,
+    audit: web::Data<std::sync::Arc<crate::audit::AuditLogger>>,
+    query: web::Query<FileRequest>,
+) -> impl Responder {
+    if user.require_admin().is_err() {
+        audit.log_denied(
+            &user,
+            "FILE_DELETE",
+            Some(&query.path),
+            Some("Requires Admin role"),
+        );
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "Insufficient permissions"
+        }));
+    }
+
     let path = match validate_and_sanitize_path(&query.path, true) {
         Ok(p) => p,
         Err(err) => return HttpResponse::BadRequest().json(err),
@@ -353,8 +465,30 @@ pub async fn delete_item(query: web::Query<FileRequest>) -> impl Responder {
     };
 
     match result {
-        Ok(_) => HttpResponse::Ok().json("Deleted successfully"),
-        Err(e) => HttpResponse::InternalServerError().json(format!("Failed to delete: {}", e)),
+        Ok(_) => {
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "FILE_DELETE",
+                Some(&query.path),
+                &user.client_ip,
+                "SUCCESS",
+                None,
+            );
+            HttpResponse::Ok().json("Deleted successfully")
+        }
+        Err(e) => {
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "FILE_DELETE",
+                Some(&query.path),
+                &user.client_ip,
+                "FAILED",
+                Some(&e.to_string()),
+            );
+            HttpResponse::InternalServerError().json(format!("Failed to delete: {}", e))
+        }
     }
 }
 
@@ -381,9 +515,23 @@ pub async fn download_file(query: web::Query<FileRequest>) -> Result<NamedFile, 
 }
 
 pub async fn upload_file(
+    user: crate::auth::AuthenticatedUser,
+    audit: web::Data<std::sync::Arc<crate::audit::AuditLogger>>,
     query: web::Query<FileRequest>,
     mut payload: Multipart,
 ) -> Result<HttpResponse, Error> {
+    if user.require_operator().is_err() {
+        audit.log_denied(
+            &user,
+            "FILE_UPLOAD",
+            Some(&query.path),
+            Some("Requires Operator or Admin role"),
+        );
+        return Ok(HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "Insufficient permissions"
+        })));
+    }
+
     let target_dir = match validate_and_sanitize_path(&query.path, true) {
         Ok(p) => p,
         Err(err) => return Ok(HttpResponse::BadRequest().json(err)),
@@ -414,6 +562,16 @@ pub async fn upload_file(
             }
         }
     }
+
+    audit.log(
+        &user.username,
+        user.role.as_str(),
+        "FILE_UPLOAD",
+        Some(&query.path),
+        &user.client_ip,
+        "SUCCESS",
+        None,
+    );
 
     Ok(HttpResponse::Ok().json("Upload complete"))
 }

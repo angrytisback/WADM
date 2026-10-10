@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { FaMicrochip, FaThermometerHalf } from 'react-icons/fa';
+import { useAuth } from '../context/AuthContext';
 import type { GpuStats } from '../types';
 
 interface DetailedSystemInfo {
@@ -31,6 +32,7 @@ interface DetailedSystemInfo {
 }
 
 function SystemInfo() {
+    const { canOperate } = useAuth();
     const [info, setInfo] = useState<DetailedSystemInfo | null>(null);
     const [error, setError] = useState('');
     const [testingSpeed, setTestingSpeed] = useState(false);
@@ -200,7 +202,7 @@ function SystemInfo() {
                                             </div>
                                             {gpu.error && (
                                                 <div style={{ color: 'var(--danger)', fontSize: '0.75rem' }}>
-                                                    ⚠️ {gpu.error}
+                                                    {gpu.error}
                                                 </div>
                                             )}
                                         </div>
@@ -247,9 +249,10 @@ function SystemInfo() {
                     <h3 style={{ margin: 0 }}>Network Speedtest</h3>
                     <button 
                         onClick={runSpeedtest} 
-                        disabled={testingSpeed}
+                        disabled={testingSpeed || !canOperate()}
+                        title={!canOperate() ? "Operator role required to run speedtest" : "Run Speedtest"}
                         className="btn primary"
-                        style={{ padding: '0.4rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+                        style={{ padding: '0.4rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', opacity: !canOperate() ? 0.5 : 1 }}
                     >
                         {testingSpeed ? 'Testing...' : 'Run Speedtest'}
                     </button>

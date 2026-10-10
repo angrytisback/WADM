@@ -1,51 +1,87 @@
-# WADM Docker Image Guide
+# WADM Docker Deployment & Multi-Architecture Publishing Guide
 
-This guide explains how to build and upload the `wadm` Docker image to Docker Hub, and how to run it so it can manage your host system properly.
+This guide details building, publishing, and operating WADM multi-architecture container images (`linux/amd64` and `linux/arm64`) for Docker Hub and GitHub Container Registry (GHCR).
 
-## 1. Build the Docker Image
-To build the Docker image, run the following command in the root of the project (where the `Dockerfile` is located).
-Replace `<your_dockerhub_username>` with your actual Docker Hub username.
+---
 
-```bash
-docker build -t <your_dockerhub_username>/wadm:latest .
-```
+## 1. Local Image Build
 
-If you want to build a multi-architecture image (for x86_64, ARM64, and RISC-V) and push it directly, you can use Docker Buildx:
+To build the WADM container image locally on your machine:
 
 ```bash
-# Set up a new builder instance if you haven't already
-docker buildx create --use
-
-# Build and push for multiple architectures
-docker buildx build --platform linux/amd64,linux/arm64,linux/riscv64 -t <your_dockerhub_username>/wadm:latest --push .
+docker build -t wadm:latest .
 ```
 
-## 2. Push to Docker Hub
-If you built the image using the standard `docker build` command (not `buildx`), you can push it with:
+The multi-stage build will:
+1. Compile the React 19 frontend into static assets (`web/dist`).
+2. Compile the Rust backend in release mode, embedding the frontend assets directly into the binary via `rust-embed`.
+3. Package the statically-compiled binary into an Alpine Linux runtime container with non-root user `wadm`.
+
+---
+
+## 2. Multi-Architecture Build with Docker Buildx
+
+WADM supports `linux/amd64` and `linux/arm64` container architectures. To build and push multi-arch images directly to your container registry:
 
 ```bash
-# Login to Docker Hub (if you haven't already)
-docker login
+# Initialize a buildx builder instance if not already active
+docker buildx create --use --name wadm-builder
 
-# Push the image
-docker push <your_dockerhub_username>/wadm:latest
+# Build and push to Docker Hub
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -t <your_dockerhub_username>/wadm:latest \
+  -t <your_dockerhub_username>/wadm:0.96.0 \
+  --push .
 ```
 
-## 3. How to Run WADM via Docker
-WADM is a system administration tool. If you run it inside a standard, isolated Docker container, it will only see the container's isolated filesystem, processes, and network, **not** the host Linux server.
+To build and push to GitHub Container Registry (GHCR):
 
-To allow WADM to manage the host system (check disks, flush RAM, reboot host, manage docker apps), you must run it with elevated privileges and host mounts:
+```bash
+# Authenticate with GHCR
+echo $CR_PAT | docker login ghcr.io -u <your_github_username> --password-stdin
+
+# Build and push
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -t ghcr.io/<your_github_username>/wadm:latest \
+  -t ghcr.io/<your_github_username>/wadm:0.96.0 \
+  --push .
+```
+
+---
+
+## 3. Production Container Execution
+
+WADM is a Linux server administration and telemetry platform. Running it in an isolated container restricts its view to the container namespace. To allow WADM to monitor host hardware, Docker containers, and systemd services, mount the required host interfaces:
 
 ```bash
 docker run -d \
   --name wadm \
+  --restart unless-stopped \
   --privileged \
   --pid=host \
   --network=host \
-  -v /:/host_root \
   -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /var/lib/wadm:/var/lib/wadm \
   -v /run/systemd:/run/systemd \
-  <your_dockerhub_username>/wadm:latest
+  ghcr.io/<your_github_username>/wadm:latest
 ```
 
-> **Note:** WADM scripts execute commands like `fstrim` and `apt`. When running inside Docker, some OS-level commands will only affect the Debian container WADM is running inside unless the backend is modified to explicitly `chroot /host_root` before executing system maintenance commands. For the best, most unrestricted experience on bare-metal servers, running the compiled binary directly as `root` (or via a systemd service) is recommended.
+### Mount Configuration Overview
+
+| Host Path | Purpose |
+| :--- | :--- |
+| `/var/run/docker.sock` | Enables WADM Docker manager to inspect and orchestrate host containers via Bollard. |
+| `/var/lib/wadm` | Persistent data directory for SQLite database (`wadm.db`), plugin storage, and SSL certificates. |
+| `/run/systemd` | Allows reading host service units and systemd journal events. |
+| `--pid=host` | Grants access to the host `/proc` filesystem for process table inspection and memory metrics. |
+| `--network=host` | Binds WADM directly to host network interfaces for bandwidth monitoring and reverse proxy routing. |
+
+---
+
+## 4. First-Time Setup
+
+1. Open your browser to `http://<server-ip>:8168`.
+2. Follow the setup wizard to configure the master administrator username, secure password, and RFC 6238 TOTP 2FA secret.
+3. Once enrolled, log in using your credentials and 6-digit TOTP token.

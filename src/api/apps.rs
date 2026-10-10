@@ -4,159 +4,36 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::net::TcpListener;
 use std::process::Command;
+use std::sync::Arc;
 
-#[derive(Serialize, Clone)]
-pub struct AppTemplate {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub icon: String,
-    pub compose_yml: String,
-    pub default_ports: Vec<u16>,
+use crate::apps::manifest::get_app_templates;
+use crate::audit::AuditLogger;
+use crate::auth::AuthenticatedUser;
+use crate::drivers::error::AppError;
+use crate::drivers::firewall::FirewallRuleRequest;
+use crate::drivers::DriverRegistry;
+use crate::proxy::{ProxyDatabase, ProxyRoute};
+
+pub fn is_port_available(port: u16) -> bool {
+    TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
 
-pub fn get_templates() -> Vec<AppTemplate> {
-    vec![
-        AppTemplate {
-            id: "nextcloud".to_string(),
-            name: "Nextcloud".to_string(),
-            description: "Self-hosted productivity platform and file storage.".to_string(),
-            icon: "https://upload.wikimedia.org/wikipedia/commons/6/60/Nextcloud_Logo.svg".to_string(),
-            default_ports: vec![8080],
-            compose_yml: r#"
-version: '3'
-services:
-  app:
-    image: nextcloud
-    restart: always
-    ports:
-      - 8080:80
-    volumes:
-      - nextcloud_data:/var/www/html
-volumes:
-  nextcloud_data:
-"#
-            .to_string(),
-        },
-        AppTemplate {
-            id: "pihole".to_string(),
-            name: "Pi-hole".to_string(),
-            description: "Network-wide Ad and Tracker Blocking DNS sinkhole.".to_string(),
-            icon: "https://upload.wikimedia.org/wikipedia/en/1/15/Pi-hole_vector_logo.svg".to_string(),
-            default_ports: vec![53, 8081],
-            compose_yml: r#"
-version: '3'
-services:
-  pihole:
-    container_name: pihole
-    image: pihole/pihole:latest
-    ports:
-      - "53:53/tcp"
-      - "53:53/udp"
-      - "8081:80/tcp"
-    environment:
-      TZ: 'UTC'
-      WEBPASSWORD: 'admin'
-    volumes:
-       - 'pihole_etc:/etc/pihole/'
-       - 'pihole_dnsmasq:/etc/dnsmasq.d/'
-    restart: unless-stopped
-volumes:
-  pihole_etc:
-  pihole_dnsmasq:
-"#
-            .to_string(),
-        },
-        AppTemplate {
-            id: "wordpress".to_string(),
-            name: "WordPress".to_string(),
-            description: "Build a modern website, blog, or store with MariaDB.".to_string(),
-            icon: "https://upload.wikimedia.org/wikipedia/commons/9/93/Wordpress_Blue_logo.png".to_string(),
-            default_ports: vec![8082],
-            compose_yml: r#"
-version: '3'
-services:
-  wordpress:
-    image: wordpress
-    restart: always
-    ports:
-      - 8082:80
-    environment:
-      WORDPRESS_DB_HOST: db
-      WORDPRESS_DB_USER: wp
-      WORDPRESS_DB_PASSWORD: wp
-      WORDPRESS_DB_NAME: wordpress
-    volumes:
-      - wordpress_data:/var/www/html
-  db:
-    image: mariadb
-    restart: always
-    environment:
-      MYSQL_DATABASE: wordpress
-      MYSQL_USER: wp
-      MYSQL_PASSWORD: wp
-      MYSQL_RANDOM_ROOT_PASSWORD: '1'
-    volumes:
-      - db_data:/var/lib/mysql
-volumes:
-  wordpress_data:
-  db_data:
-"#
-            .to_string(),
-        },
-        AppTemplate {
-            id: "npm".to_string(),
-            name: "Nginx Proxy Manager".to_string(),
-            description: "Easily manage reverse proxy hosts and free SSL certificates.".to_string(),
-            icon: "https://raw.githubusercontent.com/NginxProxyManager/nginx-proxy-manager/master/frontend/images/logo.png".to_string(),
-            default_ports: vec![8084, 8085, 8443],
-            compose_yml: r#"
-version: '3.8'
-services:
-  app:
-    image: 'jc21/nginx-proxy-manager:latest'
-    restart: unless-stopped
-    ports:
-      - '8084:80'
-      - '8085:81'
-      - '8443:443'
-    volumes:
-      - npm_data:/data
-      - npm_letsencrypt:/etc/letsencrypt
-volumes:
-  npm_data:
-  npm_letsencrypt:
-"#
-            .to_string(),
-        },
-        AppTemplate {
-            id: "portainer".to_string(),
-            name: "Portainer CE".to_string(),
-            description: "Web-based container management interface for Docker.".to_string(),
-            icon: "https://www.portainer.io/hubfs/Portainer%20Icon%20Colour.svg".to_string(),
-            default_ports: vec![9000, 9443],
-            compose_yml: r#"
-version: '3.8'
-services:
-  portainer:
-    image: portainer/portainer-ce:latest
-    restart: always
-    ports:
-      - "9000:9000"
-      - "9443:9443"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - portainer_data:/data
-volumes:
-  portainer_data:
-"#
-            .to_string(),
-        },
-    ]
-}
-
-fn is_port_available(port: u16) -> bool {
-    TcpListener::bind(("0.0.0.0", port)).is_ok()
+pub fn find_available_localhost_port() -> Result<u16, AppError> {
+    // Search within private localhost block 18000..=18999
+    for port in 18000..=18999 {
+        if is_port_available(port) {
+            return Ok(port);
+        }
+    }
+    // Fallback: ephemeral OS-assigned loopback port
+    let listener = TcpListener::bind(("127.0.0.1", 0)).map_err(|e| {
+        AppError::ExecutionFailed(format!("Failed to bind local loopback port: {}", e))
+    })?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| AppError::ExecutionFailed(e.to_string()))?
+        .port();
+    Ok(port)
 }
 
 fn generate_secure_password() -> String {
@@ -199,12 +76,24 @@ pub fn get_apps_dir() -> std::path::PathBuf {
 }
 
 pub async fn list_apps() -> impl Responder {
-    HttpResponse::Ok().json(get_templates())
+    HttpResponse::Ok().json(get_app_templates())
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct AppInstallRequest {
     pub id: String,
+    #[serde(default = "default_access_mode")]
+    pub access_mode: String, // "path" | "subdomain" | "none"
+    #[serde(default)]
+    pub domain: Option<String>,
+    #[serde(default)]
+    pub allow_exposed_ports: bool,
+    #[serde(default)]
+    pub approved_ports: Vec<u16>,
+}
+
+fn default_access_mode() -> String {
+    "path".to_string()
 }
 
 #[derive(Serialize)]
@@ -212,10 +101,31 @@ pub struct AppCredentialsResponse {
     pub id: String,
     pub credentials: Option<String>,
     pub installed: bool,
+    pub access_url: Option<String>,
+    pub access_mode: Option<String>,
+    pub internal_port: Option<u16>,
 }
 
-pub async fn get_app_credentials(path: web::Path<String>) -> impl Responder {
+pub async fn get_app_credentials(
+    user: AuthenticatedUser,
+    audit: web::Data<Arc<AuditLogger>>,
+    proxy_db: web::Data<Arc<ProxyDatabase>>,
+    path: web::Path<String>,
+) -> impl Responder {
     let id = path.into_inner();
+
+    if user.require_admin().is_err() {
+        audit.log_denied(
+            &user,
+            "APP_CREDENTIALS",
+            Some(&id),
+            Some("Requires Admin role"),
+        );
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "Insufficient permissions"
+        }));
+    }
+
     if !is_valid_app_id(&id) {
         return HttpResponse::BadRequest().json("Invalid app identifier");
     }
@@ -225,29 +135,83 @@ pub async fn get_app_credentials(path: web::Path<String>) -> impl Responder {
     let compose_file = apps_dir.join(&id).join("docker-compose.yml");
     let installed = compose_file.exists();
 
-    if creds_file.exists() {
-        if let Ok(content) = fs::read_to_string(&creds_file) {
-            return HttpResponse::Ok().json(AppCredentialsResponse {
-                id,
-                credentials: Some(content),
-                installed,
-            });
+    // Query reverse proxy route for access info
+    let (access_url, access_mode, internal_port) = match proxy_db.get_route_by_app_id(&id) {
+        Ok(Some(route)) => {
+            let port = route
+                .target_url
+                .rsplit(':')
+                .next()
+                .and_then(|p| p.parse::<u16>().ok());
+            if let Some(ref d) = route.domain {
+                (
+                    Some(format!("https://{}", d)),
+                    Some("subdomain".to_string()),
+                    port,
+                )
+            } else if let Some(ref p) = route.path_prefix {
+                (Some(p.clone()), Some("path".to_string()), port)
+            } else {
+                (None, None, port)
+            }
         }
-    }
+        _ => (None, None, None),
+    };
+
+    audit.log(
+        &user.username,
+        user.role.as_str(),
+        "APP_CREDENTIALS",
+        Some(&id),
+        &user.client_ip,
+        "SUCCESS",
+        None,
+    );
+
+    let credentials = if creds_file.exists() {
+        fs::read_to_string(&creds_file).ok()
+    } else {
+        None
+    };
 
     HttpResponse::Ok().json(AppCredentialsResponse {
         id,
-        credentials: None,
+        credentials,
         installed,
+        access_url,
+        access_mode,
+        internal_port,
     })
 }
 
-pub async fn uninstall_app(path: web::Path<String>) -> impl Responder {
+pub async fn uninstall_app(
+    user: AuthenticatedUser,
+    audit: web::Data<Arc<AuditLogger>>,
+    proxy_db: web::Data<Arc<ProxyDatabase>>,
+    path: web::Path<String>,
+) -> impl Responder {
     let id = path.into_inner();
+
+    if user.require_admin().is_err() {
+        audit.log_denied(
+            &user,
+            "APP_UNINSTALL",
+            Some(&id),
+            Some("Requires Admin role"),
+        );
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "Insufficient permissions"
+        }));
+    }
+
     if !is_valid_app_id(&id) {
         return HttpResponse::BadRequest().json("Invalid app identifier");
     }
 
+    // 1. Remove proxy route from reverse proxy database
+    let _ = proxy_db.delete_route_by_app_id(&id);
+
+    // 2. Tear down Docker containers and clean files
     let apps_dir = get_apps_dir();
     let app_dir = apps_dir.join(&id);
 
@@ -274,36 +238,168 @@ pub async fn uninstall_app(path: web::Path<String>) -> impl Responder {
 
     let _ = fs::remove_dir_all(&app_dir);
 
-    if success {
-        HttpResponse::Ok().json(format!("App {} uninstalled successfully", id))
-    } else {
-        HttpResponse::Ok().json(format!("App {} removed from filesystem", id))
-    }
+    audit.log(
+        &user.username,
+        user.role.as_str(),
+        "APP_UNINSTALL",
+        Some(&id),
+        &user.client_ip,
+        "SUCCESS",
+        if success {
+            Some("Containers stopped and filesystem purged")
+        } else {
+            Some("Removed from filesystem")
+        },
+    );
+
+    HttpResponse::Ok().json(format!(
+        "App {} uninstalled and reverse proxy route purged",
+        id
+    ))
 }
 
-pub async fn install_app(body: web::Json<AppInstallRequest>) -> impl Responder {
+pub async fn install_app(
+    user: AuthenticatedUser,
+    audit: web::Data<Arc<AuditLogger>>,
+    registry: web::Data<DriverRegistry>,
+    proxy_db: web::Data<Arc<ProxyDatabase>>,
+    body: web::Json<AppInstallRequest>,
+    job_manager: web::Data<Arc<crate::api::jobs::JobManager>>,
+) -> impl Responder {
+    if user.require_operator().is_err() {
+        audit.log_denied(
+            &user,
+            "APP_INSTALL",
+            Some(&body.id),
+            Some("Requires Operator or Admin role"),
+        );
+        return HttpResponse::Forbidden().json(serde_json::json!({
+            "error": "Insufficient permissions"
+        }));
+    }
+
     if !is_valid_app_id(&body.id) {
         return HttpResponse::BadRequest().json("Invalid app identifier");
     }
 
-    let templates = get_templates();
+    let templates = get_app_templates();
     let template = match templates.into_iter().find(|t| t.id == body.id) {
         Some(t) => t,
         None => return HttpResponse::NotFound().json("App template not found"),
     };
 
-    // Check for conflicting ports before starting
-    let mut busy_ports = Vec::new();
-    for port in &template.default_ports {
-        if !is_port_available(*port) {
-            busy_ports.push(*port);
+    // ------------------------------------------------------------------------
+    // STRICT SECURITY POLICY: Non-HTTP / External Ports Consent Verification
+    // ------------------------------------------------------------------------
+    if !template.ports.exposed_network_ports.is_empty() {
+        let required_ports: Vec<u16> = template
+            .ports
+            .exposed_network_ports
+            .iter()
+            .map(|p| p.port)
+            .collect();
+        let unapproved = !body.approved_ports.is_empty()
+            && required_ports
+                .iter()
+                .any(|p| !body.approved_ports.contains(p));
+
+        if !body.allow_exposed_ports || unapproved {
+            let port_summary: Vec<String> = template
+                .ports
+                .exposed_network_ports
+                .iter()
+                .map(|p| format!("{}/{} ({})", p.port, p.protocol, p.reason))
+                .collect();
+
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "APP_INSTALL_BLOCKED",
+                Some(&template.id),
+                &user.client_ip,
+                "REJECTED",
+                Some("Missing explicit user consent for external ports"),
+            );
+
+            return HttpResponse::BadRequest().json(serde_json::json!({
+                "error": "External Port Authorization Required",
+                "message": format!(
+                    "Application '{}' requires opening external network port(s): {}. Explicit authorization is mandatory before proceeding.",
+                    template.name,
+                    port_summary.join(", ")
+                ),
+                "required_ports": template.ports.exposed_network_ports
+            }));
+        }
+
+        // User explicitly consented to opening external firewall ports
+        for p in &template.ports.exposed_network_ports {
+            let rule = format!("allow {}/{}", p.port, p.protocol.to_lowercase());
+            let rule_req = FirewallRuleRequest { rule };
+            if let Err(e) = registry.firewall.add_rule(&rule_req).await {
+                log::warn!("Failed to auto-add firewall rule for {}: {}", p.port, e);
+            }
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "APP_PORT_AUTHORIZED",
+                Some(&template.id),
+                &user.client_ip,
+                "SUCCESS",
+                Some(&format!(
+                    "User authorized opening external port {}/{} for '{}' ({})",
+                    p.port, p.protocol, template.name, p.reason
+                )),
+            );
         }
     }
-    if !busy_ports.is_empty() {
-        return HttpResponse::BadRequest().json(format!(
-            "Cannot install {}: Port(s) {:?} are already in use on the host system.",
-            template.name, busy_ports
-        ));
+
+    // ------------------------------------------------------------------------
+    // ZERO PORT EXPOSURE: Localhost Loopback Port & Reverse Proxy Setup
+    // ------------------------------------------------------------------------
+    let mut assigned_internal_port = None;
+    let mut access_url = None;
+
+    if template.ports.internal_web_port.is_some() {
+        let internal_port = match find_available_localhost_port() {
+            Ok(p) => p,
+            Err(e) => {
+                log::error!("Failed to allocate available loopback port: {}", e);
+                return HttpResponse::InternalServerError()
+                    .json("Failed to allocate local port on 127.0.0.1");
+            }
+        };
+        assigned_internal_port = Some(internal_port);
+
+        let (domain, path_prefix, url_display) = if body.access_mode == "subdomain" {
+            if let Some(ref raw_domain) = body.domain {
+                let d = raw_domain.trim().to_lowercase();
+                (Some(d.clone()), None, format!("https://{}", d))
+            } else {
+                let p = format!("/apps/{}", template.id);
+                (None, Some(p.clone()), p)
+            }
+        } else {
+            let p = format!("/apps/{}", template.id);
+            (None, Some(p.clone()), p)
+        };
+        access_url = Some(url_display);
+
+        let route = ProxyRoute {
+            id: uuid::Uuid::new_v4().to_string(),
+            app_id: template.id.clone(),
+            domain,
+            path_prefix,
+            target_url: format!("http://127.0.0.1:{}", internal_port),
+            websocket_support: true,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+
+        if let Err(e) = proxy_db.create_or_update_route(&route) {
+            log::error!("Failed to register reverse proxy route: {}", e);
+            return HttpResponse::InternalServerError()
+                .json("Failed to configure reverse proxy route");
+        }
     }
 
     let wadm_dir = get_apps_dir();
@@ -316,22 +412,15 @@ pub async fn install_app(body: web::Json<AppInstallRequest>) -> impl Responder {
         let _ = fs::create_dir_all(&app_dir);
     }
 
-    // Replace hardcoded default passwords with securely generated random passwords
     let secure_pwd = generate_secure_password();
-    let customized_compose = template
-        .compose_yml
-        .replace(
-            "WEBPASSWORD: 'admin'",
-            &format!("WEBPASSWORD: '{}'", secure_pwd),
-        )
-        .replace(
-            "WORDPRESS_DB_PASSWORD: wp",
-            &format!("WORDPRESS_DB_PASSWORD: {}", secure_pwd),
-        )
-        .replace(
-            "MYSQL_PASSWORD: wp",
-            &format!("MYSQL_PASSWORD: {}", secure_pwd),
-        );
+    let mut customized_compose = template
+        .compose_template
+        .replace("{{SECURE_PASSWORD}}", &secure_pwd);
+
+    if let Some(internal_port) = assigned_internal_port {
+        customized_compose =
+            customized_compose.replace("{{INTERNAL_PORT}}", &internal_port.to_string());
+    }
 
     let compose_file = app_dir.join("docker-compose.yml");
     if let Err(e) = fs::write(&compose_file, &customized_compose) {
@@ -339,12 +428,13 @@ pub async fn install_app(body: web::Json<AppInstallRequest>) -> impl Responder {
             .json(format!("Failed to write compose file: {}", e));
     }
 
-    // Save generated credentials securely alongside the app
+    // Save generated credentials
     let creds_file = app_dir.join("credentials.txt");
     let creds_content = format!(
-        "Generated Password: {}\nGenerated At: {}\n",
+        "Generated Password: {}\nGenerated At: {}\nAccess URL: {}\n",
         secure_pwd,
-        chrono::Utc::now()
+        chrono::Utc::now(),
+        access_url.clone().unwrap_or_else(|| "N/A".to_string())
     );
     let _ = fs::write(&creds_file, creds_content);
     #[cfg(unix)]
@@ -354,32 +444,55 @@ pub async fn install_app(body: web::Json<AppInstallRequest>) -> impl Responder {
     }
 
     info!(
-        "Installing app {} via docker-compose with generated secure credentials...",
+        "Enqueuing app deployment job for {} via JobManager...",
         template.name
     );
 
-    let dir_clone = app_dir.clone();
-    actix_web::rt::spawn(async move {
-        let _ = actix_web::web::block(move || {
-            let out1 = Command::new("sudo")
-                .args(["-n", "docker-compose", "up", "-d"])
-                .current_dir(&dir_clone)
-                .output();
-
-            if !out1.map(|o| o.status.success()).unwrap_or(false) {
-                let _ = Command::new("sudo")
-                    .args(["-n", "docker", "compose", "up", "-d"])
-                    .current_dir(&dir_clone)
-                    .output();
-            }
-        })
+    let job_res = job_manager
+        .enqueue_job(
+            "app_install",
+            crate::api::jobs::JobTaskPayload::AppInstall {
+                app_id: template.id.clone(),
+                app_name: template.name.clone(),
+                app_dir: app_dir.clone(),
+                _secure_pwd: secure_pwd.clone(),
+            },
+        )
         .await;
-    });
 
-    HttpResponse::Ok().json(format!(
-        "{} is installing. Secure password generated: {}. View anytime in credentials.",
-        template.name, secure_pwd
-    ))
+    match job_res {
+        Ok(job_id) => {
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "APP_INSTALL",
+                Some(&template.id),
+                &user.client_ip,
+                "ACCEPTED",
+                Some(&format!("Enqueued job {}", job_id)),
+            );
+
+            HttpResponse::Accepted().json(serde_json::json!({
+                "job_id": job_id,
+                "status": "accepted",
+                "message": format!("Deployment of {} initiated via JobManager", template.name),
+                "access_url": access_url
+            }))
+        }
+        Err(e) => {
+            log::error!("Failed to enqueue app install: {}", e);
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "APP_INSTALL",
+                Some(&template.id),
+                &user.client_ip,
+                "FAILED",
+                Some(&e),
+            );
+            HttpResponse::InternalServerError().json("Failed to queue app installation")
+        }
+    }
 }
 
 #[cfg(test)]
@@ -388,33 +501,38 @@ mod tests {
 
     #[test]
     fn test_get_templates_contains_all_apps() {
-        let templates = get_templates();
+        let templates = get_app_templates();
         let ids: Vec<String> = templates.into_iter().map(|t| t.id).collect();
         assert!(ids.contains(&"nextcloud".to_string()));
         assert!(ids.contains(&"pihole".to_string()));
+        assert!(ids.contains(&"wireguard".to_string()));
+        assert!(ids.contains(&"vaultwarden".to_string()));
+        assert!(ids.contains(&"jellyfin".to_string()));
         assert!(ids.contains(&"wordpress".to_string()));
-        assert!(ids.contains(&"npm".to_string()));
         assert!(ids.contains(&"portainer".to_string()));
     }
 
     #[test]
     fn test_is_port_available_on_ephemeral_port() {
-        // Bind to port 0 to get an OS-assigned ephemeral port
         let listener = TcpListener::bind("127.0.0.1:0").expect("Failed to bind ephemeral port");
         let port = listener.local_addr().unwrap().port();
-        // Since listener is holding it, is_port_available should return false
         assert!(!is_port_available(port));
-
-        // Dropping the listener frees the port
         drop(listener);
+        assert!(is_port_available(port));
+    }
+
+    #[test]
+    fn test_find_available_localhost_port() {
+        let port = find_available_localhost_port().expect("Failed to get available port");
+        assert!(port > 0);
         assert!(is_port_available(port));
     }
 
     #[test]
     fn test_is_valid_app_id() {
         assert!(is_valid_app_id("nextcloud"));
-        assert!(is_valid_app_id("nginx-proxy-manager"));
-        assert!(is_valid_app_id("app_123"));
+        assert!(is_valid_app_id("wireguard"));
+        assert!(is_valid_app_id("vaultwarden"));
         assert!(!is_valid_app_id(""));
         assert!(!is_valid_app_id("../app"));
         assert!(!is_valid_app_id("/app"));
@@ -422,5 +540,43 @@ mod tests {
         assert!(!is_valid_app_id("-flag"));
         assert!(!is_valid_app_id("app/sub"));
         assert!(!is_valid_app_id("app\\sub"));
+    }
+
+    #[test]
+    fn test_zero_external_ports_policy_for_web_apps() {
+        let templates = get_app_templates();
+        for t in &templates {
+            if t.id == "nextcloud"
+                || t.id == "vaultwarden"
+                || t.id == "jellyfin"
+                || t.id == "wordpress"
+                || t.id == "portainer"
+            {
+                // Zero external ports
+                assert!(
+                    t.ports.exposed_network_ports.is_empty(),
+                    "Web app {} must have 0 exposed ports",
+                    t.id
+                );
+                assert!(
+                    t.ports.internal_web_port.is_some(),
+                    "Web app {} must have internal web port",
+                    t.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_wireguard_requires_external_udp_port() {
+        let templates = get_app_templates();
+        let wg = templates
+            .into_iter()
+            .find(|t| t.id == "wireguard")
+            .expect("WireGuard template not found");
+        assert_eq!(wg.ports.exposed_network_ports.len(), 1);
+        assert_eq!(wg.ports.exposed_network_ports[0].port, 51820);
+        assert_eq!(wg.ports.exposed_network_ports[0].protocol, "UDP");
+        assert!(wg.ports.internal_web_port.is_none());
     }
 }

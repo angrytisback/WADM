@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useToast } from '../context/ToastContext';
 import { useSystem } from '../context/SystemContext';
+import { useAuth } from '../context/AuthContext';
 
 interface Service {
     name: string;
@@ -12,8 +13,14 @@ export default function Services() {
     const [services, setServices] = useState<Service[]>([]);
     const [loading, setLoading] = useState(true);
     const { systemInfo } = useSystem();
-    const canManage = systemInfo?.is_root || systemInfo?.has_sudo;
-    const privilegeHint = !canManage ? "Root or Sudo privileges required for this action" : "";
+    const { canOperate } = useAuth();
+    const hasSudo = systemInfo?.is_root || systemInfo?.has_sudo;
+    const canManage = hasSudo && canOperate();
+    const privilegeHint = !canOperate()
+        ? "Operator role required for service control"
+        : !hasSudo
+            ? "Root or Sudo privileges required for this action"
+            : "";
     const [searchQuery, setSearchQuery] = useState('');
     const [logs, setLogs] = useState<string | null>(null);
     const [viewingLogs, setViewingLogs] = useState<string | null>(null);

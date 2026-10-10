@@ -14,22 +14,23 @@ RUN npm run build
 # =============================================================================
 # Stage 2: Backend Build
 # =============================================================================
-FROM rust:1.80-alpine AS backend-builder
+FROM rust:alpine AS backend-builder
 
-# Install musl toolchain and required system libraries
-RUN apk add --no-cache musl-dev libc-dev pkgconfig openssl-dev
+RUN apk add --no-cache build-base pkgconfig openssl-dev
 
-# Pre-cache dependency compilation by building an empty manifest first
 WORKDIR /app
 
+# Copy embedded frontend assets first (required by rust-embed at compile time)
+COPY --from=frontend-builder /app/web/dist ./web/dist
+
+# Pre-cache dependency compilation by building an empty manifest first
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir src && echo "fn main() {}" > src/main.rs && \
     cargo build --release && \
     rm -rf src
 
-# Build actual source
+# Build actual source code
 COPY src/ src/
-# Touch main.rs to force Cargo to rebuild the application binary
 RUN touch src/main.rs && cargo build --release
 
 # =============================================================================
@@ -38,27 +39,28 @@ RUN touch src/main.rs && cargo build --release
 FROM alpine:3.20 AS runtime
 
 # Install runtime dependencies:
-# - ca-certificates: required for TLS connections (HTTPS endpoints, Docker Hub)
-# - smartmontools: required for S.M.A.R.T. disk health queries
-# - bash: interactive shell for web terminal
-RUN apk add --no-cache ca-certificates smartmontools bash
+# - ca-certificates: TLS verification for HTTPS and ACME
+# - smartmontools: S.M.A.R.T. disk telemetry
+# - bash: Interactive shell for web terminal
+# - curl: Health check and script utilities
+RUN apk add --no-cache ca-certificates smartmontools bash curl
 
-# Create a dedicated non-root service user
-RUN addgroup -S wadm && adduser -S -G wadm wadm
+# Create dedicated non-root service user
+RUN addgroup -S wadm && adduser -S -G wadm -h /var/lib/wadm wadm
 
 WORKDIR /opt/wadm
 
-# Copy compiled binary
+# Copy compiled binary (contains embedded frontend assets)
 COPY --from=backend-builder /app/target/release/wadm ./wadm
 
-# Copy frontend static assets alongside binary
-COPY --from=frontend-builder /app/web/dist ./web/dist
+# Configure runtime directories and permissions
+RUN mkdir -p /var/lib/wadm /run/wadm && \
+    chown -R wadm:wadm /opt/wadm /var/lib/wadm /run/wadm
 
-# Set ownership
-RUN chown -R wadm:wadm /opt/wadm
+VOLUME ["/var/lib/wadm"]
 
 USER wadm
 
-EXPOSE 8080
+EXPOSE 8168
 
-ENTRYPOINT ["./wadm"]
+ENTRYPOINT ["/opt/wadm/wadm"]

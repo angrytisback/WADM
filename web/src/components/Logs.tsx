@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { FaTrash, FaSync, FaDownload } from 'react-icons/fa';
 import { useToast } from '../context/ToastContext';
+import { useAuth } from '../context/AuthContext';
 
 interface LogEntry {
     timestamp: string;
@@ -13,6 +14,7 @@ export default function Logs() {
     const [loading, setLoading] = useState(true);
     const [autoRefresh, setAutoRefresh] = useState(true);
     const { addToast } = useToast();
+    const { isAdmin } = useAuth();
     const scrollRef = useRef<HTMLDivElement>(null);
 
     const fetchLogs = async () => {
@@ -101,7 +103,7 @@ export default function Logs() {
                     <button className="btn-sm" onClick={downloadLogs} title="Download Logs">
                         <FaDownload />
                     </button>
-                    <button className="btn-sm danger" onClick={clearLogs} title="Clear Logs">
+                    <button className="btn-sm danger" onClick={clearLogs} disabled={!isAdmin()} title={!isAdmin() ? "Admin role required to clear logs" : "Clear Logs"} style={{ opacity: !isAdmin() ? 0.4 : 1 }}>
                         <FaTrash />
                     </button>
                 </div>

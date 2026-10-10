@@ -2,9 +2,15 @@ use actix_web::{web, HttpResponse, Responder};
 use log::info;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use std::process::Command;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use tokio::process::Command;
+
+pub use crate::drivers::package::is_valid_package_name;
+#[allow(unused_imports)]
+pub use crate::drivers::package::PackageUpdate as Package;
+use crate::drivers::DriverRegistry;
 
 static UPGRADABLE_CACHE: Lazy<Mutex<(u32, Instant)>> =
     Lazy::new(|| Mutex::new((0, Instant::now() - Duration::from_secs(3600))));
@@ -15,16 +21,9 @@ pub fn invalidate_upgradable_cache() {
     }
 }
 
-#[derive(Serialize)]
-struct Package {
-    name: String,
-    version: String,
-    status: String,
-}
-
 #[derive(Deserialize)]
 pub struct PackageAction {
-    name: String,
+    pub name: String,
 }
 
 #[derive(Serialize)]
@@ -32,6 +31,7 @@ struct ErrorResponse {
     error: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ManagerType {
     Apt,
@@ -40,231 +40,41 @@ pub enum ManagerType {
     Unknown,
 }
 
-static DETECTED_MANAGER: Lazy<ManagerType> = Lazy::new(|| {
-    if Command::new("which")
-        .arg("apt-get")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-    {
-        return ManagerType::Apt;
-    }
-    if Command::new("which")
-        .arg("dnf")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-    {
-        return ManagerType::Dnf;
-    }
-    if Command::new("which")
-        .arg("pacman")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-    {
-        return ManagerType::Pacman;
-    }
-    ManagerType::Unknown
-});
-
+#[allow(dead_code)]
 pub fn detect_manager() -> ManagerType {
-    *DETECTED_MANAGER
-}
-
-fn list_packages_pacman() -> Result<Vec<Package>, String> {
-    let output = Command::new("sudo")
-        .args(["-n", "pacman", "-Qu"])
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    if !output.status.success() {
-        if output.status.code() == Some(1) {
-            return Ok(Vec::new());
-        }
-        return Err(String::from_utf8_lossy(&output.stderr).to_string());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let packages = stdout
-        .lines()
-        .filter(|l| !l.is_empty())
-        .filter_map(|line| {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if !parts.is_empty() {
-                let name = parts[0].to_string();
-                let version = if parts.len() >= 4 {
-                    parts[3].to_string()
-                } else {
-                    "latest".to_string()
-                };
-                Some(Package {
-                    name,
-                    version,
-                    status: "upgradable".to_string(),
-                })
-            } else {
-                None
-            }
-        })
-        .collect();
-    Ok(packages)
-}
-
-fn list_packages_apt() -> Result<Vec<Package>, String> {
-    let output = Command::new("sudo")
-        .args(["-n", "apt", "list", "--upgradable"])
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).to_string());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let packages = stdout
-        .lines()
-        .skip(1)
-        .filter(|l| !l.is_empty())
-        .filter_map(|line| {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                let name = parts[0].split('/').next().unwrap_or(parts[0]).to_string();
-                let version = parts[1].to_string();
-                Some(Package {
-                    name,
-                    version,
-                    status: "upgradable".to_string(),
-                })
-            } else {
-                None
-            }
-        })
-        .collect();
-    Ok(packages)
-}
-
-fn list_packages_dnf() -> Result<Vec<Package>, String> {
-    let output = Command::new("sudo")
-        .args(["-n", "dnf", "check-update"])
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    let code = output.status.code();
-    if code == Some(0) {
-        return Ok(Vec::new());
-    } else if code != Some(100) {
-        return Err(String::from_utf8_lossy(&output.stderr).to_string());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let packages = stdout
-        .lines()
-        .filter(|l| {
-            !l.is_empty()
-                && !l.starts_with("Last metadata expiration check")
-                && !l.starts_with("Obsoleting Packages")
-        })
-        .filter_map(|line| {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                let name = parts[0].to_string();
-                let version = parts[1].to_string();
-                Some(Package {
-                    name,
-                    version,
-                    status: "upgradable".to_string(),
-                })
-            } else {
-                None
-            }
-        })
-        .collect();
-    Ok(packages)
-}
-
-fn is_valid_package_name(name: &str) -> bool {
-    !name.is_empty()
-        && !name.starts_with('-')
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
-}
-
-fn upgrade_package_impl(manager: &ManagerType, name: &str) -> Result<String, String> {
-    if !is_valid_package_name(name) {
-        return Err("Invalid package name".to_string());
-    }
-    let (cmd, args) = match manager {
-        ManagerType::Pacman => ("pacman", vec!["-S", "--noconfirm", name]),
-        ManagerType::Apt => ("apt-get", vec!["install", "-y", "--only-upgrade", name]),
-        ManagerType::Dnf => ("dnf", vec!["upgrade", "-y", name]),
-        ManagerType::Unknown => return Err("Unknown package manager".to_string()),
-    };
-
-    info!("Attempting to update package: {} using {:?}", name, manager);
-    let output = Command::new("sudo")
-        .args(["-n", cmd])
-        .args(args)
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    if output.status.success() {
-        info!("Successfully updated package: {}", name);
-        Ok(format!("Package {} updated successfully", name))
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).to_string())
-    }
-}
-
-fn install_package_impl(manager: &ManagerType, name: &str) -> Result<String, String> {
-    if !is_valid_package_name(name) {
-        return Err("Invalid package name".to_string());
-    }
-    let (cmd, args) = match manager {
-        ManagerType::Pacman => ("pacman", vec!["-S", "--noconfirm", name]),
-        ManagerType::Apt => ("apt-get", vec!["install", "-y", name]),
-        ManagerType::Dnf => ("dnf", vec!["install", "-y", name]),
-        ManagerType::Unknown => return Err("Unknown package manager".to_string()),
-    };
-
-    info!(
-        "Attempting to install package: {} using {:?}",
-        name, manager
-    );
-    let output = Command::new("sudo")
-        .args(["-n", cmd])
-        .args(args)
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    if output.status.success() {
-        info!("Successfully installed package: {}", name);
-        Ok(format!("Package {} installed successfully", name))
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    let registry = DriverRegistry::detect_and_init();
+    match registry.package_manager.name() {
+        "apt" => ManagerType::Apt,
+        "dnf" => ManagerType::Dnf,
+        "pacman" => ManagerType::Pacman,
+        _ => ManagerType::Unknown,
     }
 }
 
 pub fn count_upgradable_packages() -> u32 {
-    const TTL: Duration = Duration::from_secs(300); // 5-minute cache prevents 2s fork bomb
+    const TTL: Duration = Duration::from_secs(300); // 5-minute cache
     if let Ok(cache) = UPGRADABLE_CACHE.lock() {
         if cache.1.elapsed() < TTL {
             return cache.0;
         }
     }
 
-    let manager = detect_manager();
-    let result = match manager {
-        ManagerType::Pacman => list_packages_pacman(),
-        ManagerType::Apt => list_packages_apt(),
-        ManagerType::Dnf => list_packages_dnf(),
-        ManagerType::Unknown => Ok(Vec::new()),
-    };
-
-    let count = match result {
-        Ok(pkgs) => pkgs.len() as u32,
-        Err(_) => 0,
+    let registry = DriverRegistry::detect_and_init();
+    let count = match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| {
+            handle.block_on(async {
+                registry
+                    .package_manager
+                    .check_updates()
+                    .await
+                    .map(|pkgs| pkgs.len() as u32)
+                    .unwrap_or(0)
+            })
+        }),
+        Err(_) => {
+            // When not in a tokio runtime context (e.g. testing)
+            0
+        }
     };
 
     if let Ok(mut cache) = UPGRADABLE_CACHE.lock() {
@@ -274,300 +84,378 @@ pub fn count_upgradable_packages() -> u32 {
     count
 }
 
-pub async fn list_packages() -> impl Responder {
-    log::debug!("Request: list_packages");
-    let manager = detect_manager();
-    log::debug!("Using manager: {:?}", manager);
-    let result = match manager {
-        ManagerType::Pacman => list_packages_pacman(),
-        ManagerType::Apt => list_packages_apt(),
-        ManagerType::Dnf => list_packages_dnf(),
-        ManagerType::Unknown => {
-            Err("No supported package manager found (pacman, apt, dnf)".to_string())
-        }
-    };
-
-    match result {
+pub async fn list_packages(registry: web::Data<DriverRegistry>) -> impl Responder {
+    log::debug!(
+        "Request: list_packages via {}",
+        registry.package_manager.name()
+    );
+    match registry.package_manager.check_updates().await {
         Ok(pkgs) => {
             log::debug!("Found {} upgradable packages", pkgs.len());
             HttpResponse::Ok().json(pkgs)
         }
         Err(e) => {
             log::error!("List packages failed: {}", e);
-            HttpResponse::InternalServerError().json(ErrorResponse { error: e })
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: e.to_string(),
+            })
         }
     }
 }
 
-pub async fn upgrade_package(body: web::Json<PackageAction>) -> impl Responder {
-    log::info!("Request: upgrade_package {}", body.name);
-    let manager = detect_manager();
-    match upgrade_package_impl(&manager, &body.name) {
-        Ok(msg) => {
-            log::info!("Upgrade success: {}", msg);
-            invalidate_upgradable_cache();
-            HttpResponse::Ok().json(msg)
-        }
-        Err(e) => {
-            log::error!("Upgrade package failed: {}", e);
-            HttpResponse::InternalServerError().json(ErrorResponse { error: e })
-        }
-    }
-}
-
-pub async fn install_package(body: web::Json<PackageAction>) -> impl Responder {
-    log::info!("Request: install_package {}", body.name);
-    let manager = detect_manager();
-    match install_package_impl(&manager, &body.name) {
-        Ok(msg) => {
-            log::info!("Install success: {}", msg);
-            invalidate_upgradable_cache();
-            HttpResponse::Ok().json(msg)
-        }
-        Err(e) => {
-            log::error!("Install package failed: {}", e);
-            HttpResponse::InternalServerError().json(ErrorResponse { error: e })
-        }
-    }
-}
-
-fn list_installed_packages_pacman() -> Result<Vec<Package>, String> {
-    let output = Command::new("sudo")
-        .args(["-n", "pacman", "-Q"])
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).to_string());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let packages = stdout
-        .lines()
-        .filter_map(|line| {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                Some(Package {
-                    name: parts[0].to_string(),
-                    version: parts[1].to_string(),
-                    status: "installed".to_string(),
-                })
-            } else {
-                None
-            }
-        })
-        .collect();
-    Ok(packages)
-}
-
-fn list_installed_packages_apt() -> Result<Vec<Package>, String> {
-    let output = Command::new("dpkg-query")
-        .arg("-W")
-        .arg("-f=${binary:Package} ${Version}\n")
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).to_string());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let packages = stdout
-        .lines()
-        .filter_map(|line| {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                Some(Package {
-                    name: parts[0].to_string(),
-                    version: parts[1].to_string(),
-                    status: "installed".to_string(),
-                })
-            } else {
-                None
-            }
-        })
-        .collect();
-    Ok(packages)
-}
-
-fn list_installed_packages_dnf() -> Result<Vec<Package>, String> {
-    let output = Command::new("sudo")
-        .args(["-n", "dnf", "list", "installed", "-q"])
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).to_string());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let packages = stdout
-        .lines()
-        .filter(|l| !l.starts_with("Installed Packages"))
-        .filter_map(|line| {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                let name = parts[0].split('.').next().unwrap_or(parts[0]).to_string();
-                Some(Package {
-                    name,
-                    version: parts[1].to_string(),
-                    status: "installed".to_string(),
-                })
-            } else {
-                None
-            }
-        })
-        .collect();
-    Ok(packages)
-}
-
-fn update_all_packages_impl(manager: &ManagerType) -> Result<String, String> {
-    let (cmd, args) = match manager {
-        ManagerType::Pacman => ("pacman", vec!["-Syu", "--noconfirm"]),
-        ManagerType::Apt => ("apt-get", vec!["upgrade", "-y"]),
-        ManagerType::Dnf => ("dnf", vec!["upgrade", "-y"]),
-        ManagerType::Unknown => return Err("Unknown package manager".to_string()),
-    };
-
-    if let ManagerType::Apt = manager {
-        let _ = Command::new("sudo")
-            .args(["-n", "apt-get", "update"])
-            .output();
-    }
-
-    let output = Command::new("sudo")
-        .args(["-n", cmd])
-        .args(args)
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    if output.status.success() {
-        Ok("System updated successfully".to_string())
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).to_string())
-    }
-}
-
-fn remove_package_dry_run_impl(manager: &ManagerType, name: &str) -> Result<String, String> {
-    if !is_valid_package_name(name) {
-        return Err("Invalid package name".to_string());
-    }
-    match manager {
-        ManagerType::Pacman => {
-            let output = Command::new("sudo")
-                .args(["-n", "pacman", "-Rns", name, "-p"])
-                .output()
-                .map_err(|e| e.to_string())?;
-            Ok(String::from_utf8_lossy(&output.stdout).to_string())
-        }
-        ManagerType::Apt => {
-            let output = Command::new("sudo")
-                .args(["-n", "apt-get", "remove", "-s", name])
-                .output()
-                .map_err(|e| e.to_string())?;
-            Ok(String::from_utf8_lossy(&output.stdout).to_string())
-        }
-        ManagerType::Dnf => {
-            let output = Command::new("sudo")
-                .args(["-n", "dnf", "remove", name, "--assumeno"])
-                .output()
-                .map_err(|e| e.to_string())?;
-
-            Ok(String::from_utf8_lossy(&output.stdout).to_string())
-        }
-        ManagerType::Unknown => Err("Unknown package manager".to_string()),
-    }
-}
-
-fn remove_package_impl(manager: &ManagerType, name: &str) -> Result<String, String> {
-    if !is_valid_package_name(name) {
-        return Err("Invalid package name".to_string());
-    }
-    let (cmd, args) = match manager {
-        ManagerType::Pacman => ("pacman", vec!["-Rns", "--noconfirm", name]),
-        ManagerType::Apt => ("apt-get", vec!["remove", "-y", name]),
-        ManagerType::Dnf => ("dnf", vec!["remove", "-y", name]),
-        ManagerType::Unknown => return Err("Unknown package manager".to_string()),
-    };
-
-    info!("Attempting to remove package: {} using {:?}", name, manager);
-    let output = Command::new("sudo")
-        .args(["-n", cmd])
-        .args(args)
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    if output.status.success() {
-        info!("Successfully removed package: {}", name);
-        Ok(format!("Package {} removed successfully", name))
-    } else {
-        Err(String::from_utf8_lossy(&output.stderr).to_string())
-    }
-}
-
-pub async fn list_installed_packages() -> impl Responder {
-    log::debug!("Request: list_installed_packages");
-    let manager = detect_manager();
-    let result = match manager {
-        ManagerType::Pacman => list_installed_packages_pacman(),
-        ManagerType::Apt => list_installed_packages_apt(),
-        ManagerType::Dnf => list_installed_packages_dnf(),
-        ManagerType::Unknown => Ok(Vec::new()),
-    };
-
-    match result {
+pub async fn list_installed_packages(registry: web::Data<DriverRegistry>) -> impl Responder {
+    log::debug!(
+        "Request: list_installed_packages via {}",
+        registry.package_manager.name()
+    );
+    match registry.package_manager.list_installed().await {
         Ok(pkgs) => {
             log::debug!("Found {} installed packages", pkgs.len());
             HttpResponse::Ok().json(pkgs)
         }
         Err(e) => {
             log::error!("List installed packages failed: {}", e);
-            HttpResponse::InternalServerError().json(ErrorResponse { error: e })
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: e.to_string(),
+            })
         }
     }
 }
 
-pub async fn update_all_packages() -> impl Responder {
-    log::info!("Request: update_all_packages");
-    let manager = detect_manager();
-    match update_all_packages_impl(&manager) {
-        Ok(msg) => {
-            log::info!("Global update success: {}", msg);
+pub async fn upgrade_package(
+    user: crate::auth::AuthenticatedUser,
+    audit: web::Data<std::sync::Arc<crate::audit::AuditLogger>>,
+    body: web::Json<PackageAction>,
+    registry: web::Data<DriverRegistry>,
+) -> impl Responder {
+    log::info!("Request: upgrade_package {}", body.name);
+    if user.require_admin().is_err() {
+        audit.log_denied(
+            &user,
+            "PACKAGE_UPGRADE",
+            Some(&body.name),
+            Some("Requires Admin role"),
+        );
+        return HttpResponse::Forbidden().json(ErrorResponse {
+            error: "Insufficient permissions".to_string(),
+        });
+    }
+
+    if !is_valid_package_name(&body.name) {
+        return HttpResponse::BadRequest().json(ErrorResponse {
+            error: "Invalid package name".to_string(),
+        });
+    }
+
+    let (cmd, args) = match registry.package_manager.name() {
+        "pacman" => (
+            "sudo",
+            vec!["-n", "pacman", "-S", "--noconfirm", &body.name],
+        ),
+        "apt" => (
+            "sudo",
+            vec![
+                "-n",
+                "apt-get",
+                "install",
+                "-y",
+                "--only-upgrade",
+                &body.name,
+            ],
+        ),
+        "dnf" => ("sudo", vec!["-n", "dnf", "upgrade", "-y", &body.name]),
+        _ => {
+            return HttpResponse::BadRequest().json(ErrorResponse {
+                error: "Unknown package manager".to_string(),
+            })
+        }
+    };
+
+    let output = Command::new(cmd).args(&args).output().await;
+    match output {
+        Ok(o) if o.status.success() => {
+            info!("Successfully updated package: {}", body.name);
             invalidate_upgradable_cache();
-            HttpResponse::Ok().json(msg)
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "PACKAGE_UPGRADE",
+                Some(&body.name),
+                &user.client_ip,
+                "SUCCESS",
+                None,
+            );
+            HttpResponse::Ok().json(format!("Package {} updated successfully", body.name))
+        }
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+            log::error!("Upgrade package failed: {}", stderr);
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "PACKAGE_UPGRADE",
+                Some(&body.name),
+                &user.client_ip,
+                "FAILED",
+                Some(&stderr),
+            );
+            HttpResponse::InternalServerError().json(ErrorResponse { error: stderr })
         }
         Err(e) => {
-            log::error!("Global update failed: {}", e);
-            HttpResponse::InternalServerError().json(ErrorResponse { error: e })
+            log::error!("Upgrade package process failed: {}", e);
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "PACKAGE_UPGRADE",
+                Some(&body.name),
+                &user.client_ip,
+                "FAILED",
+                Some(&e.to_string()),
+            );
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: e.to_string(),
+            })
         }
     }
 }
 
-pub async fn remove_package_dry_run(body: web::Json<PackageAction>) -> impl Responder {
+pub async fn install_package(
+    user: crate::auth::AuthenticatedUser,
+    audit: web::Data<std::sync::Arc<crate::audit::AuditLogger>>,
+    body: web::Json<PackageAction>,
+    registry: web::Data<DriverRegistry>,
+) -> impl Responder {
+    log::info!("Request: install_package {}", body.name);
+    if user.require_admin().is_err() {
+        audit.log_denied(
+            &user,
+            "PACKAGE_INSTALL",
+            Some(&body.name),
+            Some("Requires Admin role"),
+        );
+        return HttpResponse::Forbidden().json(ErrorResponse {
+            error: "Insufficient permissions".to_string(),
+        });
+    }
+
+    if !is_valid_package_name(&body.name) {
+        return HttpResponse::BadRequest().json(ErrorResponse {
+            error: "Invalid package name".to_string(),
+        });
+    }
+
+    let (cmd, args) = registry.package_manager.build_install_command(&body.name);
+    let output = Command::new(&cmd).args(&args).output().await;
+    match output {
+        Ok(o) if o.status.success() => {
+            info!("Successfully installed package: {}", body.name);
+            invalidate_upgradable_cache();
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "PACKAGE_INSTALL",
+                Some(&body.name),
+                &user.client_ip,
+                "SUCCESS",
+                None,
+            );
+            HttpResponse::Ok().json(format!("Package {} installed successfully", body.name))
+        }
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+            log::error!("Install package failed: {}", stderr);
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "PACKAGE_INSTALL",
+                Some(&body.name),
+                &user.client_ip,
+                "FAILED",
+                Some(&stderr),
+            );
+            HttpResponse::InternalServerError().json(ErrorResponse { error: stderr })
+        }
+        Err(e) => {
+            log::error!("Install package process failed: {}", e);
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "PACKAGE_INSTALL",
+                Some(&body.name),
+                &user.client_ip,
+                "FAILED",
+                Some(&e.to_string()),
+            );
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: e.to_string(),
+            })
+        }
+    }
+}
+
+pub async fn remove_package(
+    user: crate::auth::AuthenticatedUser,
+    audit: web::Data<std::sync::Arc<crate::audit::AuditLogger>>,
+    body: web::Json<PackageAction>,
+    registry: web::Data<DriverRegistry>,
+) -> impl Responder {
+    log::info!("Request: remove_package {}", body.name);
+    if user.require_admin().is_err() {
+        audit.log_denied(
+            &user,
+            "PACKAGE_REMOVE",
+            Some(&body.name),
+            Some("Requires Admin role"),
+        );
+        return HttpResponse::Forbidden().json(ErrorResponse {
+            error: "Insufficient permissions".to_string(),
+        });
+    }
+
+    if !is_valid_package_name(&body.name) {
+        return HttpResponse::BadRequest().json(ErrorResponse {
+            error: "Invalid package name".to_string(),
+        });
+    }
+
+    let (cmd, args) = registry
+        .package_manager
+        .build_remove_command(&body.name, false);
+    let output = Command::new(&cmd).args(&args).output().await;
+    match output {
+        Ok(o) if o.status.success() => {
+            info!("Successfully removed package: {}", body.name);
+            invalidate_upgradable_cache();
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "PACKAGE_REMOVE",
+                Some(&body.name),
+                &user.client_ip,
+                "SUCCESS",
+                None,
+            );
+            HttpResponse::Ok().json(format!("Package {} removed successfully", body.name))
+        }
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+            log::error!("Remove package failed: {}", stderr);
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "PACKAGE_REMOVE",
+                Some(&body.name),
+                &user.client_ip,
+                "FAILED",
+                Some(&stderr),
+            );
+            HttpResponse::InternalServerError().json(ErrorResponse { error: stderr })
+        }
+        Err(e) => {
+            log::error!("Remove package process failed: {}", e);
+            audit.log(
+                &user.username,
+                user.role.as_str(),
+                "PACKAGE_REMOVE",
+                Some(&body.name),
+                &user.client_ip,
+                "FAILED",
+                Some(&e.to_string()),
+            );
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: e.to_string(),
+            })
+        }
+    }
+}
+
+pub async fn remove_package_dry_run(
+    user: crate::auth::AuthenticatedUser,
+    audit: web::Data<std::sync::Arc<crate::audit::AuditLogger>>,
+    body: web::Json<PackageAction>,
+    registry: web::Data<DriverRegistry>,
+) -> impl Responder {
     log::debug!("Request: remove_package_dry_run {}", body.name);
-    let manager = detect_manager();
-    match remove_package_dry_run_impl(&manager, &body.name) {
+    if user.require_admin().is_err() {
+        audit.log_denied(
+            &user,
+            "PACKAGE_REMOVE_DRY_RUN",
+            Some(&body.name),
+            Some("Requires Admin role"),
+        );
+        return HttpResponse::Forbidden().json(ErrorResponse {
+            error: "Insufficient permissions".to_string(),
+        });
+    }
+
+    match registry.package_manager.remove_dry_run(&body.name).await {
         Ok(output) => {
             log::debug!("Remove dry run success for {}", body.name);
             HttpResponse::Ok().json(output)
         }
         Err(e) => {
             log::error!("Remove dry run failed: {}", e);
-            HttpResponse::InternalServerError().json(ErrorResponse { error: e })
+            HttpResponse::InternalServerError().json(ErrorResponse {
+                error: e.to_string(),
+            })
         }
     }
 }
 
-pub async fn remove_package(body: web::Json<PackageAction>) -> impl Responder {
-    log::info!("Request: remove_package {}", body.name);
-    let manager = detect_manager();
-    match remove_package_impl(&manager, &body.name) {
-        Ok(msg) => {
-            log::info!("Remove success: {}", msg);
-            HttpResponse::Ok().json(msg)
-        }
+pub async fn update_all_packages(
+    user: crate::auth::AuthenticatedUser,
+    audit: web::Data<std::sync::Arc<crate::audit::AuditLogger>>,
+    job_manager: web::Data<Arc<crate::api::jobs::JobManager>>,
+    registry: web::Data<DriverRegistry>,
+) -> impl Responder {
+    let pm_name = registry.package_manager.name();
+    log::info!(
+        "Request: update_all_packages via {} (enqueue as background job)",
+        pm_name
+    );
+    if user.require_admin().is_err() {
+        audit.log_denied(
+            &user,
+            "PACKAGE_UPDATE_ALL",
+            Some(pm_name),
+            Some("Requires Admin role"),
+        );
+        return HttpResponse::Forbidden().json(ErrorResponse {
+            error: "Insufficient permissions".to_string(),
+        });
+    }
+
+    let (cmd, args) = registry.package_manager.build_upgrade_command();
+
+    audit.log(
+        &user.username,
+        user.role.as_str(),
+        "PACKAGE_UPDATE_ALL",
+        Some(pm_name),
+        &user.client_ip,
+        "SUCCESS",
+        Some("Enqueued update-all background job"),
+    );
+
+    match job_manager
+        .enqueue_job(
+            "package_upgrade",
+            crate::api::jobs::JobTaskPayload::CommandExecution {
+                cmd,
+                args,
+                output_file: None,
+                description: format!("System packages upgrade via {}", pm_name),
+            },
+        )
+        .await
+    {
+        Ok(job_id) => HttpResponse::Accepted().json(crate::api::jobs::JobActionResponse {
+            job_id,
+            status: "pending".to_string(),
+            message: "Package update queued successfully".to_string(),
+        }),
         Err(e) => {
-            log::error!("Remove package failed: {}", e);
+            log::error!("Failed to enqueue package update job: {}", e);
             HttpResponse::InternalServerError().json(ErrorResponse { error: e })
         }
     }

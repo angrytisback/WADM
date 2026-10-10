@@ -2,6 +2,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import type { SystemInfo } from '../types';
 import { useAuth } from './AuthContext';
+import { useCluster } from './ClusterContext';
 
 interface SystemContextType {
     systemInfo: SystemInfo | null;
@@ -12,7 +13,8 @@ interface SystemContextType {
 const SystemContext = createContext<SystemContextType | undefined>(undefined);
 
 export function SystemProvider({ children }: { children: React.ReactNode }) {
-    const { isAuthenticated } = useAuth();
+    const { isAuthenticated, token } = useAuth();
+    const { activeNode } = useCluster();
     const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
     const [loading, setLoading] = useState(false);
 
@@ -20,7 +22,13 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
         if (!isAuthenticated) return;
         setLoading(true);
         try {
-            const res = await fetch('/api/system');
+            const url = activeNode ? `/api/cluster/nodes/${activeNode.id}/system` : '/api/system';
+            const res = await fetch(url, {
+                headers: {
+                    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                },
+                credentials: 'include',
+            });
             if (res.ok) {
                 const data = await res.json();
                 setSystemInfo(data);
@@ -30,7 +38,7 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
         } finally {
             setLoading(false);
         }
-    }, [isAuthenticated]);
+    }, [isAuthenticated, token, activeNode]);
 
     useEffect(() => {
         if (isAuthenticated) {
@@ -38,7 +46,7 @@ export function SystemProvider({ children }: { children: React.ReactNode }) {
         } else {
             setSystemInfo(null);
         }
-    }, [isAuthenticated, refreshSystemInfo]);
+    }, [isAuthenticated, activeNode, refreshSystemInfo]);
 
     return (
         <SystemContext.Provider value={{ systemInfo, loading, refreshSystemInfo }}>

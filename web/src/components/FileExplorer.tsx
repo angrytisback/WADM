@@ -5,6 +5,7 @@ import {
   FaFileMedical
 } from 'react-icons/fa';
 import { useToast } from '../context/ToastContext';
+import { useAuth } from '../context/AuthContext';
 
 interface FileInfo {
   name: string;
@@ -23,6 +24,7 @@ export const FileExplorer: React.FC = () => {
   const [fileContent, setFileContent] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { addToast } = useToast();
+  const { canOperate, isAdmin } = useAuth();
 
   const fetchFiles = useCallback(async (path: string) => {
     setLoading(true);
@@ -204,8 +206,10 @@ export const FileExplorer: React.FC = () => {
           <div style={{ display: 'flex', gap: '0.5rem' }}>
             <button
               onClick={saveFile}
+              disabled={!canOperate()}
+              title={!canOperate() ? "Operator role required to save files" : "Save"}
               className="btn primary"
-              style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.4rem 0.8rem' }}
+              style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.4rem 0.8rem', opacity: !canOperate() ? 0.5 : 1 }}
             >
               <FaSave />
               <span>Save</span>
@@ -249,19 +253,19 @@ export const FileExplorer: React.FC = () => {
           <div style={{ marginTop: '0.5rem' }}>{getBreadcrumbs()}</div>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <button onClick={() => handleCreate(true)} className="btn" style={{ background: 'rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.4rem 0.8rem' }} title="New Directory">
+          <button onClick={() => handleCreate(true)} disabled={!canOperate()} className="btn" style={{ background: 'rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.4rem 0.8rem', opacity: !canOperate() ? 0.5 : 1 }} title={!canOperate() ? "Operator role required to create directory" : "New Directory"}>
             <FaFolderPlus />
             <span>New Folder</span>
           </button>
-          <button onClick={() => handleCreate(false)} className="btn" style={{ background: 'rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.4rem 0.8rem' }} title="New File">
+          <button onClick={() => handleCreate(false)} disabled={!canOperate()} className="btn" style={{ background: 'rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.4rem 0.8rem', opacity: !canOperate() ? 0.5 : 1 }} title={!canOperate() ? "Operator role required to create file" : "New File"}>
             <FaFileMedical />
             <span>New File</span>
           </button>
-          <button onClick={() => fileInputRef.current?.click()} className="btn primary" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.4rem 0.8rem' }} title="Upload File">
+          <button onClick={() => fileInputRef.current?.click()} disabled={!canOperate()} className="btn primary" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.4rem 0.8rem', opacity: !canOperate() ? 0.5 : 1 }} title={!canOperate() ? "Operator role required to upload file" : "Upload File"}>
             <FaUpload />
             <span>Upload</span>
           </button>
-          <input type="file" ref={fileInputRef} style={{ display: 'none' }} multiple onChange={handleUpload} />
+          <input type="file" ref={fileInputRef} style={{ display: 'none' }} multiple onChange={handleUpload} disabled={!canOperate()} />
         </div>
       </div>
 
@@ -327,18 +331,20 @@ export const FileExplorer: React.FC = () => {
                       {!file.is_dir && (
                         <button
                           onClick={() => handleEdit(file)}
+                          disabled={!canOperate()}
                           className="btn-text"
-                          title="Edit"
-                          style={{ padding: '0.3rem 0.5rem', color: 'var(--accent-color)' }}
+                          title={!canOperate() ? "Operator role required to edit file" : "Edit"}
+                          style={{ padding: '0.3rem 0.5rem', color: 'var(--accent-color)', opacity: !canOperate() ? 0.4 : 1 }}
                         >
                           <FaEdit />
                         </button>
                       )}
                       <button
                         onClick={() => handleDelete(file)}
+                        disabled={!isAdmin()}
                         className="btn-text danger"
-                        title="Delete"
-                        style={{ padding: '0.3rem 0.5rem' }}
+                        title={!isAdmin() ? "Admin role required to delete file" : "Delete"}
+                        style={{ padding: '0.3rem 0.5rem', opacity: !isAdmin() ? 0.4 : 1 }}
                       >
                         <FaTrash />
                       </button>
