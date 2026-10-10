@@ -25,6 +25,7 @@ async fn health_check() -> impl Responder {
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     api::logs::init();
+    let _ = rustls::crypto::ring::default_provider().install_default();
 
     let args: Vec<String> = std::env::args().collect();
 
@@ -307,7 +308,7 @@ async fn main() -> std::io::Result<()> {
                 }
 
                 server
-                    .bind_rustls(("0.0.0.0", ssl_config.https_port), tls_config)?
+                    .bind_rustls_0_23(("0.0.0.0", ssl_config.https_port), tls_config)?
                     .run()
                     .await
             }

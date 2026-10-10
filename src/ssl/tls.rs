@@ -1,16 +1,16 @@
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
-pub fn load_certs(cert_path: &Path) -> Result<Vec<rustls::Certificate>, String> {
+pub fn load_certs(cert_path: &Path) -> Result<Vec<CertificateDer<'static>>, String> {
     let file = File::open(cert_path)
         .map_err(|e| format!("Failed to open certificate file at {:?}: {}", cert_path, e))?;
     let mut reader = BufReader::new(file);
 
-    let certs: Vec<rustls::Certificate> = rustls_pemfile::certs(&mut reader)
-        .filter_map(|r| r.ok())
-        .map(|der| rustls::Certificate(der.to_vec()))
-        .collect();
+    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut reader)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to parse certificates at {:?}: {}", cert_path, e))?;
 
     if certs.is_empty() {
         return Err(format!("No certificates found in {:?}", cert_path));
@@ -19,7 +19,7 @@ pub fn load_certs(cert_path: &Path) -> Result<Vec<rustls::Certificate>, String> 
     Ok(certs)
 }
 
-pub fn load_private_key(key_path: &Path) -> Result<rustls::PrivateKey, String> {
+pub fn load_private_key(key_path: &Path) -> Result<PrivateKeyDer<'static>, String> {
     let file = File::open(key_path)
         .map_err(|e| format!("Failed to open private key file at {:?}: {}", key_path, e))?;
     let mut reader = BufReader::new(file);
@@ -27,20 +27,18 @@ pub fn load_private_key(key_path: &Path) -> Result<rustls::PrivateKey, String> {
     let key_opt = rustls_pemfile::private_key(&mut reader)
         .map_err(|e| format!("Failed to parse private key at {:?}: {}", key_path, e))?;
 
-    let key_der = key_opt.ok_or_else(|| format!("No private key found in {:?}", key_path))?;
-
-    Ok(rustls::PrivateKey(key_der.secret_der().to_vec()))
+    key_opt.ok_or_else(|| format!("No private key found in {:?}", key_path))
 }
 
 pub fn build_server_config(
     cert_path: &Path,
     key_path: &Path,
 ) -> Result<rustls::ServerConfig, String> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let cert_chain = load_certs(cert_path)?;
     let key = load_private_key(key_path)?;
 
     rustls::ServerConfig::builder()
-        .with_safe_defaults()
         .with_no_client_auth()
         .with_single_cert(cert_chain, key)
         .map_err(|e| format!("Invalid TLS certificate/key pair: {}", e))
@@ -49,32 +47,29 @@ pub fn build_server_config(
 pub fn validate_and_parse_pem(
     cert_pem: &str,
     key_pem: &str,
-) -> Result<(Vec<rustls::Certificate>, rustls::PrivateKey), String> {
+) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), String> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let mut cert_reader = BufReader::new(cert_pem.as_bytes());
-    let certs: Vec<rustls::Certificate> = rustls_pemfile::certs(&mut cert_reader)
-        .filter_map(|r| r.ok())
-        .map(|der| rustls::Certificate(der.to_vec()))
-        .collect();
+    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_reader)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Invalid certificate PEM: {}", e))?;
 
     if certs.is_empty() {
         return Err("No certificates found in provided PEM data".to_string());
     }
 
     let mut key_reader = BufReader::new(key_pem.as_bytes());
-    let key_der = rustls_pemfile::private_key(&mut key_reader)
+    let key = rustls_pemfile::private_key(&mut key_reader)
         .map_err(|e| format!("Invalid private key PEM: {}", e))?
         .ok_or_else(|| "No valid private key found in provided PEM data".to_string())?;
 
-    let private_key = rustls::PrivateKey(key_der.secret_der().to_vec());
-
     // Verify key pairs with certificate by attempting to build ServerConfig
     rustls::ServerConfig::builder()
-        .with_safe_defaults()
         .with_no_client_auth()
-        .with_single_cert(certs.clone(), private_key.clone())
+        .with_single_cert(certs.clone(), key.clone_key())
         .map_err(|e| format!("Certificate does not match private key: {}", e))?;
 
-    Ok((certs, private_key))
+    Ok((certs, key))
 }
 
 #[cfg(test)]

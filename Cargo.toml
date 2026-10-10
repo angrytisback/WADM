@@ -12,7 +12,7 @@ keywords = ["linux", "admin", "dashboard", "docker", "sysadmin"]
 categories = ["command-line-utilities", "network-programming"]
 
 [dependencies]
-actix-web = { version = "4", features = ["rustls"] }
+actix-web = { version = "4", features = ["rustls-0_23"] }
 actix-cors = "0.7"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -40,7 +40,8 @@ sha2 = "0.10"
 rcgen = "0.14.10"
 instant-acme = "0.8.5"
 rustls-pemfile = "2.2.0"
-rustls = "0.20"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pki-types = "1"
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots", "connect"] }
 reqwest = { version = "0.13.5", features = ["stream", "json"] }
 flate2 = "1.1.10"
