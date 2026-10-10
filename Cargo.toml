@@ -1,6 +1,6 @@
 [package]
 name = "wadm"
-version = "0.96.0"
+version = "0.98.0"
 edition = "2021"
 authors = ["angrytisback"]
 description = "Modern, ultra-fast and lightweight Linux Web Administration Panel"
