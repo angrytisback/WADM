@@ -67,7 +67,7 @@ jobs:
           echo "CHECKSUM_PATH=dist/${ARTIFACT_NAME}.tar.gz.sha256" >> $GITHUB_ENV
 
       - name: Upload release assets to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             ${{ env.ARCHIVE_PATH }}
