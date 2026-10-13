@@ -36,7 +36,7 @@ actix-multipart = "0.6"
 rusqlite = { version = "0.32", features = ["bundled"] }
 uuid = { version = "1.10", features = ["v4", "serde"] }
 async-trait = "0.1"
-sha2 = "0.10"
+sha2 = "0.11"
 rcgen = "0.14.10"
 instant-acme = "0.8.5"
 rustls-pemfile = "2.2.0"
